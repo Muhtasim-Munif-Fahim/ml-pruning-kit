@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Sequence
 
 from .layers import LayerSpec, layer_weight_count
 from .prune import magnitude_prune_model
