@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Dict, List, Sequence
 
-from .layers import LayerSpec, layer_weight_count
-
 
 def magnitude_prune_layer(
     weights: Sequence[float],
