@@ -2,9 +2,14 @@
 
 This module provides a lightweight, framework-free training loop that
 applies magnitude pruning after each epoch and tracks survival across
-pruning rounds.  It mirrors the Iterative Magnitude Pruning (IMP) workflow
-without requiring a real neural-network framework — weights are simple
+pruning rounds.  It mirrors the Iterative Magnitude Pruning (IMP)
+workflow used by lottery-ticket experiments — weights are simple
 flat lists of floats and the loss is a toy quadratic proxy.
+
+Set ``TrainingConfig.rewind`` to reset surviving weights to their
+initialization after every prune step. Set ``TrainingConfig.prune_fraction``
+to remove that fraction of remaining (non-zero) weights each epoch
+instead of re-pruning to an absolute ``prune_density``.
 """
 
 from __future__ import annotations
@@ -15,18 +20,32 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Sequence
 
 from .layers import LayerSpec, layer_weight_count
-from .prune import magnitude_prune_model
+from .prune import (
+    iterative_magnitude_prune_model,
+    magnitude_prune_model,
+    rewind_model,
+)
 
 
 @dataclass
 class TrainingConfig:
-    """Hyper-parameters for the simulated training loop."""
+    """Hyper-parameters for the simulated training loop.
+
+    ``prune_density`` is an absolute keep-fraction applied to every
+    layer after each epoch (the original behaviour). When
+    ``prune_fraction`` is set, each epoch instead removes that
+    fraction of the weights that are still non-zero (compounding IMP).
+    ``rewind`` restores survivors to the run's initial weights after
+    each prune step (lottery-ticket reset).
+    """
 
     epochs: int = 5
     steps_per_epoch: int = 20
     learning_rate: float = 0.01
     noise_scale: float = 0.05
     prune_density: float = 0.7
+    prune_fraction: float | None = None
+    rewind: bool = False
     seed: int = 42
 
     def __post_init__(self) -> None:
@@ -40,6 +59,8 @@ class TrainingConfig:
             raise ValueError("noise_scale must be non-negative")
         if not 0.0 < self.prune_density <= 1.0:
             raise ValueError("prune_density must be in (0, 1]")
+        if self.prune_fraction is not None and not 0.0 < self.prune_fraction <= 1.0:
+            raise ValueError("prune_fraction must be in (0, 1]")
 
 
 @dataclass
@@ -144,11 +165,14 @@ def train_with_pruning(
         deterministic set is generated from ``config.seed``.
     """
     config = config or TrainingConfig()
-    weights = (
-        initial_weights
-        if initial_weights is not None
-        else _initial_weights(specs, seed=config.seed)
-    )
+    if initial_weights is not None:
+        weights = {
+            name: [float(value) for value in layer]
+            for name, layer in initial_weights.items()
+        }
+    else:
+        weights = _initial_weights(specs, seed=config.seed)
+    initial_snapshot = {name: list(layer) for name, layer in weights.items()}
 
     rng = random.Random(config.seed)
     history = TrainingHistory(config=config)
@@ -157,9 +181,20 @@ def train_with_pruning(
         for _ in range(config.steps_per_epoch):
             _step(weights, config.learning_rate, config.noise_scale, rng=rng)
 
-        pruned = magnitude_prune_model(
-            weights, density=config.prune_density
-        )
+        if config.prune_fraction is not None:
+            pruned = iterative_magnitude_prune_model(
+                weights,
+                prune_fraction=config.prune_fraction,
+                rounds=1,
+                rewind=config.rewind,
+                initial_weights=initial_snapshot if config.rewind else None,
+            ).weights
+        else:
+            pruned = magnitude_prune_model(
+                weights, density=config.prune_density
+            )
+            if config.rewind:
+                pruned = rewind_model(pruned, initial_snapshot)
         weights = pruned
         loss = _loss(weights)
         total = sum(layer_weight_count(spec) for spec in specs)

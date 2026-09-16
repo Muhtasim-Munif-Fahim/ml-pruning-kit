@@ -150,3 +150,64 @@ def test_cli_mask_prints_stats() -> None:
     assert rc == 0
     assert "shape: (3, 4)" in buf.getvalue()
     assert "kept: 6/12" in buf.getvalue()
+
+
+def test_cli_imp_json_reports_density_schedule() -> None:
+    specs_str = "fc1=dense:5x2"
+    trained = ",".join(f"{0.1 * (i + 1):.1f}" for i in range(10))
+    initial = ",".join(f"{1.0 + i:.1f}" for i in range(10))
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = main([
+            "imp",
+            "--specs", specs_str,
+            "--weights", trained,
+            "--initial-weights", initial,
+            "--prune-fraction", "0.2",
+            "--rounds", "2",
+            "--rewind",
+            "--json",
+        ])
+    assert rc == 0
+    payload = json.loads(buf.getvalue())
+    assert payload["rewind"] is True
+    assert payload["rounds"] == 2
+    assert payload["prune_fraction"] == 0.2
+    assert len(payload["steps"]) == 2
+    assert payload["steps"][0]["kept"] == 8
+    assert payload["steps"][1]["kept"] == 6
+    assert payload["final_density"] == pytest.approx(0.6)
+
+
+def test_cli_imp_writes_markdown(tmp_path: Path) -> None:
+    specs_str = "fc1=dense:5x2"
+    trained = ",".join(f"{0.1 * (i + 1):.1f}" for i in range(10))
+    out = tmp_path / "imp.md"
+    rc = main([
+        "imp",
+        "--specs", specs_str,
+        "--weights", trained,
+        "--prune-fraction", "0.2",
+        "--rounds", "2",
+        "--output", str(out),
+    ])
+    assert rc == 0
+    text = out.read_text(encoding="utf-8")
+    assert "Iterative magnitude pruning" in text
+    assert "Rewind: no" in text
+    assert "| 1 |" in text
+    assert "| 2 |" in text
+
+
+def test_cli_imp_rejects_initial_without_rewind() -> None:
+    buf_err = io.StringIO()
+    with redirect_stdout(io.StringIO()):
+        with redirect_stderr(buf_err):
+            rc = main([
+                "imp",
+                "--specs", "fc1=dense:2x2",
+                "--weights", "0.1,0.2,0.3,0.4",
+                "--initial-weights", "1,2,3,4",
+            ])
+    assert rc == 2
+    assert "rewind" in buf_err.getvalue()
