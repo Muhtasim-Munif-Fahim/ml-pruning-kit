@@ -5,9 +5,16 @@ from __future__ import annotations
 import pytest
 
 from prune_kit import (
+    IterativePruneResult,
+    iterative_magnitude_prune_layer,
+    iterative_magnitude_prune_model,
     magnitude_prune_layer,
     magnitude_prune_model,
+    model_density,
+    rewind_layer,
+    rewind_model,
     total_pruned,
+    weight_density,
 )
 
 
@@ -97,3 +104,267 @@ def test_total_pruned_rejects_layer_count_mismatch() -> None:
 def test_total_pruned_rejects_layer_name_mismatch() -> None:
     with pytest.raises(ValueError, match="same layer names"):
         total_pruned({"a": [0.1]}, {"b": [0.0]})
+
+
+def test_weight_density_counts_nonzero() -> None:
+    assert weight_density([0.0, 0.1, 0.0, 0.2]) == pytest.approx(0.5)
+
+
+def test_weight_density_rejects_empty() -> None:
+    with pytest.raises(ValueError, match="not be empty"):
+        weight_density([])
+
+
+def test_model_density_is_overall_fraction() -> None:
+    model = {"fc1": [0.0, 0.1, 0.2], "fc2": [0.0, 0.0]}
+    assert model_density(model) == pytest.approx(0.4)
+
+
+def test_rewind_layer_restores_survivors() -> None:
+    trained = [0.0, 0.9, 0.0, 0.8]
+    initial = [1.0, 2.0, 3.0, 4.0]
+    assert rewind_layer(trained, initial) == [0.0, 2.0, 0.0, 4.0]
+
+
+def test_rewind_layer_does_not_modify_inputs() -> None:
+    trained = [0.0, 0.9]
+    initial = [1.0, 2.0]
+    rewind_layer(trained, initial)
+    assert trained == [0.0, 0.9]
+    assert initial == [1.0, 2.0]
+
+
+def test_rewind_layer_rejects_length_mismatch() -> None:
+    with pytest.raises(ValueError, match="initial has"):
+        rewind_layer([0.1, 0.2], [0.3])
+
+
+def test_rewind_model_applies_per_layer() -> None:
+    model = {"fc1": [0.0, 0.5], "fc2": [0.7, 0.0]}
+    initial = {"fc1": [1.0, 2.0], "fc2": [3.0, 4.0]}
+    assert rewind_model(model, initial) == {
+        "fc1": [0.0, 2.0],
+        "fc2": [3.0, 0.0],
+    }
+
+
+def test_rewind_model_rejects_name_mismatch() -> None:
+    with pytest.raises(ValueError, match="same layer names"):
+        rewind_model({"fc1": [0.1]}, {"fc2": [0.1]})
+
+
+def test_iterative_prune_layer_removes_fraction_of_remaining() -> None:
+    weights = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    pruned = iterative_magnitude_prune_layer(weights, prune_fraction=0.2, rounds=1)
+    assert sum(1 for value in pruned if value != 0.0) == 8
+    assert pruned[:2] == [0.0, 0.0]
+    assert pruned[2:] == [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+
+
+def test_iterative_prune_layer_compounds_across_rounds() -> None:
+    weights = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    pruned = iterative_magnitude_prune_layer(weights, prune_fraction=0.2, rounds=2)
+    # 10 -> remove 2 -> 8; then remove round(0.2*8)=2 -> 6 survivors.
+    assert sum(1 for value in pruned if value != 0.0) == 6
+    assert pruned == [0.0, 0.0, 0.0, 0.0, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+
+
+def test_iterative_prune_layer_rewind_restores_initial_survivors() -> None:
+    trained = [0.1, 0.9, 0.2, 0.8, 0.3]
+    initial = [1.0, 2.0, 3.0, 4.0, 5.0]
+    pruned = iterative_magnitude_prune_layer(
+        trained,
+        prune_fraction=0.4,
+        rounds=1,
+        rewind=True,
+        initial_weights=initial,
+    )
+    # Remove 2 smallest trained mags (0.1, 0.2); survivors rewind to initial.
+    assert pruned == [0.0, 2.0, 0.0, 4.0, 5.0]
+
+
+def test_iterative_prune_layer_without_rewind_keeps_trained_values() -> None:
+    trained = [0.1, 0.9, 0.2, 0.8, 0.3]
+    pruned = iterative_magnitude_prune_layer(
+        trained, prune_fraction=0.4, rounds=1, rewind=False
+    )
+    assert pruned == [0.0, 0.9, 0.0, 0.8, 0.3]
+
+
+def test_iterative_prune_ranks_by_trained_not_initial_magnitudes() -> None:
+    trained = [0.01, 0.99, 0.02, 0.98]
+    initial = [9.0, 0.1, 8.0, 0.2]
+    pruned = iterative_magnitude_prune_layer(
+        trained,
+        prune_fraction=0.5,
+        rounds=1,
+        rewind=True,
+        initial_weights=initial,
+    )
+    # Keep the two largest *trained* weights (indices 1 and 3), then rewind.
+    assert pruned == [0.0, 0.1, 0.0, 0.2]
+
+
+def test_iterative_prune_rewind_between_rounds_keeps_trained_ranking() -> None:
+    trained = [0.1, 0.9, 0.2, 0.8, 0.3]
+    initial = [1.0, 2.0, 3.0, 4.0, 5.0]
+    pruned = iterative_magnitude_prune_layer(
+        trained,
+        prune_fraction=0.4,
+        rounds=2,
+        rewind=True,
+        initial_weights=initial,
+    )
+    # Round 1 keeps indices 1, 3, 4; round 2 drops the smallest remaining
+    # trained mag (0.3 at index 4). Rewind uses initial values.
+    assert pruned == [0.0, 2.0, 0.0, 4.0, 0.0]
+
+
+def test_iterative_prune_defaults_rewind_target_to_input() -> None:
+    weights = [0.1, 0.9, 0.2, 0.8]
+    pruned = iterative_magnitude_prune_layer(
+        weights, prune_fraction=0.5, rounds=1, rewind=True
+    )
+    # Keep largest two (0.9, 0.8) and rewind to the same buffer.
+    assert pruned == [0.0, 0.9, 0.0, 0.8]
+
+
+def test_iterative_prune_does_not_modify_inputs() -> None:
+    trained = [0.1, 0.9, 0.2, 0.8]
+    initial = [1.0, 2.0, 3.0, 4.0]
+    original_trained = list(trained)
+    original_initial = list(initial)
+    iterative_magnitude_prune_layer(
+        trained,
+        prune_fraction=0.5,
+        rounds=2,
+        rewind=True,
+        initial_weights=initial,
+    )
+    assert trained == original_trained
+    assert initial == original_initial
+
+
+def test_iterative_prune_leaves_existing_zeros_pruned() -> None:
+    weights = [0.0, 0.0, 0.4, 0.8]
+    pruned = iterative_magnitude_prune_layer(weights, prune_fraction=0.5, rounds=1)
+    # Only two survivors; remove one. Zeros stay zero.
+    assert pruned[0] == 0.0
+    assert pruned[1] == 0.0
+    assert sum(1 for value in pruned if value != 0.0) == 1
+    assert pruned[3] == 0.8
+
+
+def test_iterative_prune_mask_matches_oneshot_product_density() -> None:
+    weights = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    iterative = iterative_magnitude_prune_layer(weights, prune_fraction=0.2, rounds=2)
+    oneshot = magnitude_prune_layer(weights, density=0.6)
+    assert iterative == oneshot
+
+
+def test_iterative_prune_layer_rejects_empty() -> None:
+    with pytest.raises(ValueError, match="not be empty"):
+        iterative_magnitude_prune_layer([])
+
+
+def test_iterative_prune_layer_rejects_invalid_fraction() -> None:
+    with pytest.raises(ValueError, match="prune_fraction"):
+        iterative_magnitude_prune_layer([0.1, 0.2], prune_fraction=0.0)
+    with pytest.raises(ValueError, match="prune_fraction"):
+        iterative_magnitude_prune_layer([0.1, 0.2], prune_fraction=1.5)
+
+
+def test_iterative_prune_layer_rejects_invalid_rounds() -> None:
+    with pytest.raises(ValueError, match="rounds"):
+        iterative_magnitude_prune_layer([0.1, 0.2], rounds=0)
+
+
+def test_iterative_prune_layer_requires_rewind_for_initial() -> None:
+    with pytest.raises(ValueError, match="rewind"):
+        iterative_magnitude_prune_layer(
+            [0.1, 0.2], initial_weights=[0.3, 0.4], rewind=False
+        )
+
+
+def test_iterative_prune_model_returns_history() -> None:
+    model = {
+        "fc1": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+        "fc2": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+    }
+    result = iterative_magnitude_prune_model(
+        model, prune_fraction=0.2, rounds=3, rewind=False
+    )
+    assert isinstance(result, IterativePruneResult)
+    assert len(result.steps) == 3
+    assert result.density_curve() == [step.density for step in result.steps]
+    assert result.final_density() == result.steps[-1].density
+    # Compounding: 10 -> 8 -> 6 -> 5 per layer.
+    assert result.steps[0].kept == 16
+    assert result.steps[1].kept == 12
+    assert result.steps[2].kept == 10
+    assert result.rewind is False
+
+
+def test_iterative_prune_model_rewind_and_per_layer() -> None:
+    model = {
+        "fc1": [0.1, 0.9, 0.2, 0.8],
+        "fc2": [0.1, 0.9, 0.2, 0.8],
+    }
+    initial = {
+        "fc1": [1.0, 2.0, 3.0, 4.0],
+        "fc2": [5.0, 6.0, 7.0, 8.0],
+    }
+    result = iterative_magnitude_prune_model(
+        model,
+        prune_fraction=0.5,
+        rounds=1,
+        rewind=True,
+        initial_weights=initial,
+        per_layer={"fc1": 0.25},
+    )
+    # fc1 removes 1 of 4; fc2 removes 2 of 4.
+    assert sum(1 for value in result.weights["fc1"] if value != 0.0) == 3
+    assert sum(1 for value in result.weights["fc2"] if value != 0.0) == 2
+    assert result.weights["fc1"] == [0.0, 2.0, 3.0, 4.0]
+    assert result.weights["fc2"] == [0.0, 6.0, 0.0, 8.0]
+    assert result.rewind is True
+
+
+def test_iterative_prune_model_does_not_modify_inputs() -> None:
+    model = {"fc1": [0.1, 0.9, 0.2, 0.8]}
+    initial = {"fc1": [1.0, 2.0, 3.0, 4.0]}
+    original_model = {"fc1": list(model["fc1"])}
+    original_initial = {"fc1": list(initial["fc1"])}
+    iterative_magnitude_prune_model(
+        model,
+        prune_fraction=0.5,
+        rounds=2,
+        rewind=True,
+        initial_weights=initial,
+    )
+    assert model == original_model
+    assert initial == original_initial
+
+
+def test_iterative_prune_model_rejects_empty() -> None:
+    with pytest.raises(ValueError, match="not be empty"):
+        iterative_magnitude_prune_model({})
+
+
+def test_iterative_prune_model_rejects_unknown_per_layer() -> None:
+    with pytest.raises(ValueError, match="unknown layer"):
+        iterative_magnitude_prune_model({"fc1": [0.1]}, per_layer={"ghost": 0.2})
+
+
+def test_iterative_prune_model_rejects_initial_without_rewind() -> None:
+    with pytest.raises(ValueError, match="rewind"):
+        iterative_magnitude_prune_model(
+            {"fc1": [0.1, 0.2]},
+            initial_weights={"fc1": [0.3, 0.4]},
+            rewind=False,
+        )
+
+
+def test_iterative_prune_model_rejects_invalid_rounds() -> None:
+    with pytest.raises(ValueError, match="rounds"):
+        iterative_magnitude_prune_model({"fc1": [0.1, 0.2]}, rounds=0)

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .layers import LayerSpec, conv_layer, dense_layer
 from .masks import dense_mask, mask_density, sparse_mask_to_dense
-from .prune import magnitude_prune_model, total_pruned
+from .prune import iterative_magnitude_prune_model
 from .survival import model_survival_summary, per_layer_survival
 
 
@@ -57,6 +57,53 @@ def _build_parser() -> argparse.ArgumentParser:
     masks.add_argument("--density", type=float, required=True, help="Fraction of 1s")
     masks.add_argument("--seed", type=int, default=None)
     masks.add_argument("--json", action="store_true", help="Print mask stats as JSON")
+
+    imp = sub.add_parser(
+        "imp",
+        help="Iterative magnitude pruning with optional lottery-ticket rewind",
+    )
+    imp.add_argument(
+        "--prune-fraction", type=float, default=0.2,
+        help="Fraction of currently surviving weights to zero each round (default: 0.2)",
+    )
+    imp.add_argument(
+        "--rounds", type=int, default=1,
+        help="Number of prune rounds (default: 1)",
+    )
+    imp.add_argument(
+        "--rewind", action="store_true",
+        help="Reset surviving weights to --initial-weights after each prune round",
+    )
+    imp.add_argument(
+        "--per-layer-fraction", default=None,
+        help="Comma-separated name=fraction overrides, e.g. fc1=0.1,fc2=0.3",
+    )
+    imp.add_argument(
+        "--specs", required=True,
+        help=(
+            "Comma-separated layer specs, e.g. 'fc1=dense:784x256,fc2=dense:256x10'. "
+            "The first N weights in --weights are assigned to the first spec in order."
+        ),
+    )
+    imp.add_argument(
+        "--weights", required=True,
+        help="Comma-separated floats (typically trained weights)",
+    )
+    imp.add_argument(
+        "--initial-weights", default=None,
+        help=(
+            "Comma-separated floats used as the lottery-ticket rewind target. "
+            "Defaults to --weights when --rewind is set."
+        ),
+    )
+    imp.add_argument(
+        "--output", "-o", default=None,
+        help="Write the Markdown report to a file instead of stdout",
+    )
+    imp.add_argument(
+        "--json", action="store_true",
+        help="Print the result as JSON",
+    )
 
     return parser
 
@@ -145,6 +192,27 @@ def _render_survival_markdown(summary: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _render_imp_markdown(result) -> str:
+    rewind_label = "yes" if result.rewind else "no"
+    lines: list[str] = [
+        "# Iterative magnitude pruning",
+        "",
+        f"- Prune fraction: {result.prune_fraction:.4f}",
+        f"- Rounds: {result.rounds}",
+        f"- Rewind: {rewind_label}",
+        f"- Final density: {result.final_density():.4f}",
+        f"- Final kept: {result.steps[-1].kept}/{result.steps[-1].total}",
+        "",
+        "| Round | Kept | Total | Density |",
+        "| --- | ---: | ---: | ---: |",
+    ]
+    for step in result.steps:
+        lines.append(
+            f"| {step.round} | {step.kept} | {step.total} | {step.density:.4f} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def cmd_survival(args: argparse.Namespace) -> int:
     try:
         specs = _parse_specs(args.specs)
@@ -190,6 +258,67 @@ def cmd_mask(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_imp(args: argparse.Namespace) -> int:
+    try:
+        specs = _parse_specs(args.specs)
+        flat = _parse_weights(args.weights)
+        per_layer = _parse_per_layer(args.per_layer_fraction)
+        initial_flat = (
+            _parse_weights(args.initial_weights)
+            if args.initial_weights is not None
+            else None
+        )
+    except ValueError as exc:
+        print(f"imp: {exc}", file=sys.stderr)
+        return 2
+    if initial_flat is not None and not args.rewind:
+        print("imp: --initial-weights requires --rewind", file=sys.stderr)
+        return 2
+    try:
+        model = _weights_per_layer(specs, flat)
+        initial = (
+            _weights_per_layer(specs, initial_flat)
+            if initial_flat is not None
+            else None
+        )
+        result = iterative_magnitude_prune_model(
+            model,
+            prune_fraction=args.prune_fraction,
+            rounds=args.rounds,
+            rewind=args.rewind,
+            initial_weights=initial,
+            per_layer=per_layer or None,
+        )
+    except (KeyError, ValueError) as exc:
+        print(f"imp: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        payload = {
+            "prune_fraction": result.prune_fraction,
+            "rounds": result.rounds,
+            "rewind": result.rewind,
+            "final_density": result.final_density(),
+            "steps": [
+                {
+                    "round": step.round,
+                    "kept": step.kept,
+                    "total": step.total,
+                    "density": step.density,
+                }
+                for step in result.steps
+            ],
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
+    text = _render_imp_markdown(result)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+        print(f"Wrote {args.output}")
+        return 0
+    print(text)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -197,5 +326,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_survival(args)
     if args.command == "mask":
         return cmd_mask(args)
+    if args.command == "imp":
+        return cmd_imp(args)
     parser.error(f"unknown command: {args.command}")
     return 2

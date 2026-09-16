@@ -108,3 +108,74 @@ def test_loss_curve_matches_epochs():
     config = TrainingConfig(epochs=3, steps_per_epoch=4, prune_density=0.7, seed=3)
     history = train_with_pruning(specs, config=config)
     assert history.loss_curve() == [e.loss for e in history.epochs]
+
+
+def test_training_config_rejects_invalid_prune_fraction():
+    with pytest.raises(ValueError, match="prune_fraction"):
+        TrainingConfig(prune_fraction=0.0)
+    with pytest.raises(ValueError, match="prune_fraction"):
+        TrainingConfig(prune_fraction=1.5)
+
+
+def test_train_rewind_resets_survivors_to_initial():
+    specs = make_specs()
+    init = {}
+    for spec in specs:
+        count = layer_weight_count(spec)
+        init[spec.name] = [0.4 + 0.03 * i for i in range(count)]
+    original = {name: list(values) for name, values in init.items()}
+    config = TrainingConfig(
+        epochs=2, steps_per_epoch=5, prune_density=0.5, rewind=True, seed=11
+    )
+    history = train_with_pruning(specs, config=config, initial_weights=init)
+    final = history.final_weights()
+    for name, initial_weights in original.items():
+        for final_value, initial_value in zip(final[name], initial_weights):
+            if final_value != 0.0:
+                assert final_value == initial_value
+    # Caller-supplied initial weights must not be mutated.
+    assert init == original
+
+
+def test_train_without_rewind_leaves_trained_survivors():
+    specs = make_specs()
+    init = {}
+    for spec in specs:
+        count = layer_weight_count(spec)
+        init[spec.name] = [0.4 + 0.03 * i for i in range(count)]
+    config = TrainingConfig(
+        epochs=1, steps_per_epoch=8, prune_density=0.8, rewind=False, seed=11
+    )
+    history = train_with_pruning(specs, config=config, initial_weights=init)
+    final = history.final_weights()
+    survivors_differ = False
+    for name in init:
+        for final_value, initial_value in zip(final[name], init[name]):
+            if final_value != 0.0 and final_value != initial_value:
+                survivors_differ = True
+    assert survivors_differ
+
+
+def test_train_compound_prune_fraction_reduces_density_each_epoch():
+    specs = make_specs()
+    init = {}
+    for spec in specs:
+        count = layer_weight_count(spec)
+        init[spec.name] = [0.5 + 0.01 * i for i in range(count)]
+    config = TrainingConfig(
+        epochs=3,
+        steps_per_epoch=4,
+        prune_fraction=0.5,
+        rewind=True,
+        seed=5,
+    )
+    history = train_with_pruning(specs, config=config, initial_weights=init)
+    densities = history.density_curve()
+    assert len(densities) == 3
+    for earlier, later in zip(densities, densities[1:]):
+        assert later < earlier
+    final = history.final_weights()
+    for name, initial_weights in init.items():
+        for final_value, initial_value in zip(final[name], initial_weights):
+            if final_value != 0.0:
+                assert final_value == initial_value

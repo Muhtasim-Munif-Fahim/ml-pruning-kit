@@ -36,14 +36,48 @@ for row in summary["layers"]:
 print(summary["overall_survival"])
 ```
 
+## Iterative magnitude pruning (lottery ticket rewind)
+
+Each round of iterative magnitude pruning removes `prune_fraction` of
+the weights that are still non-zero, ranked by magnitude. When
+`rewind=True`, surviving weights are reset to `initial_weights` after
+every prune step — the lottery-ticket hypothesis reset. Ranking always
+uses the pre-rewind (typically trained) magnitudes, so compounding
+sparsity matches one-shot pruning to the product density.
+
+```python
+from prune_kit import iterative_magnitude_prune_model
+
+trained = {"fc1": [0.1, 0.9, 0.2, 0.8, 0.3, 0.7, 0.4, 0.6, 0.5, 1.0]}
+initial = {"fc1": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]}
+
+result = iterative_magnitude_prune_model(
+    trained,
+    prune_fraction=0.2,
+    rounds=3,
+    rewind=True,
+    initial_weights=initial,
+)
+print(result.weights)
+print(result.density_curve())
+```
+
+The simulated training loop in `train_with_pruning` can do the same
+reset between prune steps (`TrainingConfig(rewind=True)`), and can
+compound sparsity with `prune_fraction` instead of an absolute
+`prune_density`.
+
 ## CLI quick start
 
 ```bash
 prune-kit survival --help
+prune-kit imp --help
 ```
 
-The CLI emits a Markdown table with per-layer survival, kept weight
-counts, and the overall survival fraction.
+The `survival` command emits a Markdown table with per-layer survival,
+kept weight counts, and the overall survival fraction. The `imp`
+command runs iterative magnitude pruning (optionally with
+`--rewind`) and prints the density after each round.
 
 ## Tests
 
