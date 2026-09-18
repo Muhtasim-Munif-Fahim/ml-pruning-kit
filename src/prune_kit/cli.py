@@ -10,7 +10,7 @@ from pathlib import Path
 from .layers import LayerSpec, conv_layer, dense_layer
 from .masks import dense_mask, mask_density, sparse_mask_to_dense
 from .prune import iterative_magnitude_prune_model
-from .survival import model_survival_summary, per_layer_survival
+from .survival import model_channel_survival_summary, model_survival_summary
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -105,6 +105,50 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print the result as JSON",
     )
 
+    structured = sub.add_parser(
+        "structured",
+        help="Prune whole conv filters or channels by L1/L2 norm",
+    )
+    structured.add_argument(
+        "--density", type=float, default=0.5,
+        help="Fraction of filters/channels to keep (default: 0.5)",
+    )
+    structured.add_argument(
+        "--norm", choices=("l1", "l2"), default="l1",
+        help="Ranking norm over each filter or channel (default: l1)",
+    )
+    structured.add_argument(
+        "--structure", choices=("filter", "channel"), default="filter",
+        help=(
+            "filter: prune output filters (dim 0); "
+            "channel: prune input channels (dim 1). Default: filter"
+        ),
+    )
+    structured.add_argument(
+        "--per-layer-density", default=None,
+        help="Comma-separated name=density overrides, e.g. conv1=0.75,conv2=0.25",
+    )
+    structured.add_argument(
+        "--specs", required=True,
+        help=(
+            "Comma-separated layer specs, e.g. "
+            "'conv1=conv:8x3x3x3,fc1=dense:256x10'. "
+            "Non-conv layers are copied unchanged."
+        ),
+    )
+    structured.add_argument(
+        "--weights", required=True,
+        help="Comma-separated floats (the flat weight buffer for the model)",
+    )
+    structured.add_argument(
+        "--output", "-o", default=None,
+        help="Write the Markdown report to a file instead of stdout",
+    )
+    structured.add_argument(
+        "--json", action="store_true",
+        help="Print the summary as JSON",
+    )
+
     return parser
 
 
@@ -189,6 +233,50 @@ def _render_survival_markdown(summary: dict) -> str:
             f"| {row['layer']} | {row['kind']} | {row['total_weights']} | "
             f"{row['kept_weights']} | {row['survival_fraction']:.4f} |"
         )
+    return "\n".join(lines) + "\n"
+
+
+def _render_channel_markdown(summary: dict) -> str:
+    lines: list[str] = [
+        "# Channel / filter pruning survival",
+        "",
+        f"- Structure: {summary['structure']}",
+        f"- Norm: {summary['norm']}",
+        f"- Density: {summary['density']:.4f}",
+        f"- Total channels: {summary['total_channels']}",
+        f"- Total kept: {summary['total_kept']}",
+        f"- Overall survival: {summary['overall_survival']:.4f}",
+    ]
+    if summary["skipped"]:
+        skipped = ", ".join(summary["skipped"])
+        lines.append(f"- Skipped (non-conv): {skipped}")
+    lines.extend([
+        "",
+        "| Layer | Kind | Structure | Total | Kept | Survival | Kept indices |",
+        "| --- | --- | --- | ---: | ---: | ---: | --- |",
+    ])
+    for row in summary["layers"]:
+        kept = ",".join(str(index) for index in row["kept_indices"]) or "—"
+        lines.append(
+            f"| {row['layer']} | {row['kind']} | {row['structure']} | "
+            f"{row['total_channels']} | {row['kept_channels']} | "
+            f"{row['survival_fraction']:.4f} | {kept} |"
+        )
+    for row in summary["layers"]:
+        unit = "filters" if row["structure"] == "filter" else "channels"
+        lines.extend([
+            "",
+            f"## {row['layer']} ({row['kind']}, {unit})",
+            "",
+            "| Index | L1 | L2 | Kept |",
+            "| ---: | ---: | ---: | --- |",
+        ])
+        for channel in row["channels"]:
+            kept_label = "yes" if channel["kept"] else "no"
+            lines.append(
+                f"| {channel['index']} | {channel['l1']:.6f} | "
+                f"{channel['l2']:.6f} | {kept_label} |"
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -319,6 +407,41 @@ def cmd_imp(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_structured(args: argparse.Namespace) -> int:
+    try:
+        specs = _parse_specs(args.specs)
+        flat = _parse_weights(args.weights)
+        per_layer = _parse_per_layer(args.per_layer_density)
+    except ValueError as exc:
+        print(f"structured: {exc}", file=sys.stderr)
+        return 2
+    try:
+        model = _weights_per_layer(specs, flat)
+        summary = model_channel_survival_summary(
+            specs,
+            model,
+            density=args.density,
+            norm=args.norm,
+            structure=args.structure,
+            per_layer=per_layer or None,
+        )
+    except (KeyError, ValueError) as exc:
+        print(f"structured: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        printable = dict(summary)
+        printable.pop("pruned_weights", None)
+        print(json.dumps(printable, indent=2))
+        return 0
+    text = _render_channel_markdown(summary)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+        print(f"Wrote {args.output}")
+        return 0
+    print(text)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -328,5 +451,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_mask(args)
     if args.command == "imp":
         return cmd_imp(args)
+    if args.command == "structured":
+        return cmd_structured(args)
     parser.error(f"unknown command: {args.command}")
     return 2

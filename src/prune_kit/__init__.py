@@ -15,7 +15,20 @@ from .prune import (
     total_pruned,
     weight_density,
 )
-from .survival import model_survival_summary, per_layer_survival
+from .structured import (
+    channel_groups,
+    channel_norms,
+    structured_keep_indices,
+    structured_prune_layer,
+    structured_prune_model,
+    vector_norm,
+)
+from .survival import (
+    model_channel_survival_summary,
+    model_survival_summary,
+    per_channel_survival,
+    per_layer_survival,
+)
 from .train import (
     EpochResult,
     TrainingConfig,
@@ -42,8 +55,16 @@ __all__ = [
     "iterative_magnitude_prune_model",
     "PruneStep",
     "IterativePruneResult",
+    "channel_groups",
+    "channel_norms",
+    "vector_norm",
+    "structured_keep_indices",
+    "structured_prune_layer",
+    "structured_prune_model",
     "per_layer_survival",
     "model_survival_summary",
+    "per_channel_survival",
+    "model_channel_survival_summary",
     "TrainingConfig",
     "EpochResult",
     "TrainingHistory",
