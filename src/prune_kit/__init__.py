@@ -1,5 +1,10 @@
 """Pruning toolkit (full public surface)."""
 
+from .global_unstructured import (
+    GlobalPruneResult,
+    global_magnitude_prune_model,
+    iterative_global_magnitude_prune_model,
+)
 from .layers import LayerSpec, dense_layer, conv_layer, layer_weight_count
 from .masks import dense_mask, mask_density, sparse_mask_to_dense
 from .prune import (
@@ -69,4 +74,7 @@ __all__ = [
     "EpochResult",
     "TrainingHistory",
     "train_with_pruning",
+    "GlobalPruneResult",
+    "global_magnitude_prune_model",
+    "iterative_global_magnitude_prune_model",
 ]
