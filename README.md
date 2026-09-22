@@ -1,9 +1,10 @@
 # ml-pruning-kit
 
 A small, dependency-free Python toolkit for studying weight pruning in
-neural networks. It implements magnitude pruning (single-step and
-iterative), structured channel/filter pruning, per-layer and
-per-channel survival reporting, sparse-mask helpers, and a tiny CLI.
+neural networks. It implements per-layer and global unstructured
+magnitude pruning (single-step and iterative), structured channel/filter
+pruning, per-layer and per-channel survival reporting, sparse-mask
+helpers, and a tiny CLI.
 The codebase is intentionally framework-agnostic: every routine works
 on flat Python lists of weights, so it composes with PyTorch,
 TensorFlow, JAX, or a custom numpy implementation.
@@ -102,12 +103,64 @@ for row in summary["layers"]:
 L1 and L2 can rank filters differently: a sparse filter with one large
 weight has a higher L2 than a dense filter of equal L1.
 
+## Global unstructured magnitude pruning
+
+Per-layer magnitude pruning keeps the same fraction of weights inside
+every layer. Global unstructured pruning ranks **every scalar weight
+in the model together** and zeros the smallest magnitudes until a
+target sparsity is reached, so a layer of small weights can be pruned
+harder than a layer of large weights. `sparsity` is the fraction of
+weights to remove (`0.0` keeps everything, `1.0` zeros everything).
+The number kept is `round((1 - sparsity) * N)`, the same rounding as
+per-layer pruning at `density = 1 - sparsity`. Ties break toward the
+earlier layer in dict order, then the lower index.
+
+An optional iterative schedule reaches that same final mask over
+several rounds. Removals are spread evenly (earlier rounds take any
+remainder). Pass `schedule` for an explicit cumulative sparsity after
+each round. When `rewind=True`, surviving weights are reset to
+`initial_weights` after every round. Ranking always uses the
+pre-rewind magnitudes, so the kept positions match the one-shot global
+prune. This complements per-layer lottery-ticket IMP (equal density
+per layer) and structured filter/channel pruning.
+
+```python
+from prune_kit import (
+    global_magnitude_prune_model,
+    iterative_global_magnitude_prune_model,
+)
+
+trained = {
+    "small": [0.1, 0.2, 0.3, 0.4],
+    "large": [1.0, 2.0, 3.0, 4.0],
+}
+initial = {
+    "small": [0.5, 0.5, 0.5, 0.5],
+    "large": [0.5, 0.5, 0.5, 0.5],
+}
+
+one_shot = global_magnitude_prune_model(trained, sparsity=0.5)
+# "small" is fully zeroed; "large" is kept.
+
+result = iterative_global_magnitude_prune_model(
+    trained,
+    sparsity=0.5,
+    rounds=2,
+    rewind=True,
+    initial_weights=initial,
+)
+print(result.weights)
+print(result.density_curve())
+print(result.schedule)
+```
+
 ## CLI quick start
 
 ```bash
 prune-kit survival --help
 prune-kit imp --help
 prune-kit structured --help
+prune-kit global --help
 ```
 
 The `survival` command emits a Markdown table with per-layer survival,
@@ -116,6 +169,10 @@ command runs iterative magnitude pruning (optionally with
 `--rewind`) and prints the density after each round. The `structured`
 command prunes whole conv filters or channels by `--norm l1|l2` and
 prints a per-channel survival table (non-conv layers are skipped).
+The `global` command prunes lowest-|w| weights to `--sparsity`
+(optionally over `--rounds` or an explicit `--schedule`) and prints
+the density after each round plus a per-layer kept-count table.
+`--rewind` resets survivors to `--initial-weights`.
 
 ## Tests
 

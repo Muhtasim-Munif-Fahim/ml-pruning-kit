@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 
+from .global_unstructured import iterative_global_magnitude_prune_model
 from .layers import LayerSpec, conv_layer, dense_layer
 from .masks import dense_mask, mask_density, sparse_mask_to_dense
 from .prune import iterative_magnitude_prune_model
@@ -149,6 +150,59 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print the summary as JSON",
     )
 
+    global_cmd = sub.add_parser(
+        "global",
+        help="Global unstructured magnitude pruning to a target sparsity",
+    )
+    global_cmd.add_argument(
+        "--sparsity", type=float, default=None,
+        help=(
+            "Fraction of all weights to prune (default: 0.5). "
+            "With --schedule, must match the final entry."
+        ),
+    )
+    global_cmd.add_argument(
+        "--rounds", type=int, default=1,
+        help="Split the prune evenly across this many rounds (default: 1)",
+    )
+    global_cmd.add_argument(
+        "--schedule", default=None,
+        help=(
+            "Comma-separated cumulative sparsities, one per round, "
+            "e.g. 0.25,0.5,0.9. Replaces the even split of --sparsity."
+        ),
+    )
+    global_cmd.add_argument(
+        "--rewind", action="store_true",
+        help="Reset surviving weights to --initial-weights after each round",
+    )
+    global_cmd.add_argument(
+        "--specs", required=True,
+        help=(
+            "Comma-separated layer specs, e.g. 'fc1=dense:784x256,fc2=dense:256x10'. "
+            "The first N weights in --weights are assigned to the first spec in order."
+        ),
+    )
+    global_cmd.add_argument(
+        "--weights", required=True,
+        help="Comma-separated floats (typically trained weights)",
+    )
+    global_cmd.add_argument(
+        "--initial-weights", default=None,
+        help=(
+            "Comma-separated floats used as the rewind target. "
+            "Defaults to --weights when --rewind is set."
+        ),
+    )
+    global_cmd.add_argument(
+        "--output", "-o", default=None,
+        help="Write the Markdown report to a file instead of stdout",
+    )
+    global_cmd.add_argument(
+        "--json", action="store_true",
+        help="Print the result as JSON",
+    )
+
     return parser
 
 
@@ -198,6 +252,15 @@ def _parse_per_layer(raw: str | None) -> dict:
 
 def _parse_weights(raw: str) -> list:
     return [float(item) for item in raw.split(",") if item.strip()]
+
+
+def _parse_schedule(raw: str | None) -> list | None:
+    if not raw:
+        return None
+    values = [float(item) for item in raw.split(",") if item.strip()]
+    if not values:
+        raise ValueError("schedule must not be empty")
+    return values
 
 
 def _weights_per_layer(specs, flat_weights: list) -> dict:
@@ -298,6 +361,40 @@ def _render_imp_markdown(result) -> str:
         lines.append(
             f"| {step.round} | {step.kept} | {step.total} | {step.density:.4f} |"
         )
+    return "\n".join(lines) + "\n"
+
+
+def _render_global_markdown(result) -> str:
+    rewind_label = "yes" if result.rewind else "no"
+    schedule = ", ".join(f"{value:.4f}" for value in result.schedule)
+    lines: list[str] = [
+        "# Global unstructured magnitude pruning",
+        "",
+        f"- Sparsity: {result.sparsity:.4f}",
+        f"- Rounds: {result.rounds}",
+        f"- Rewind: {rewind_label}",
+        f"- Schedule: {schedule}",
+        f"- Final density: {result.final_density():.4f}",
+        f"- Final kept: {result.steps[-1].kept}/{result.steps[-1].total}",
+        "",
+        "| Round | Target sparsity | Kept | Total | Density |",
+        "| --- | ---: | ---: | ---: | ---: |",
+    ]
+    for step, target in zip(result.steps, result.schedule):
+        lines.append(
+            f"| {step.round} | {target:.4f} | {step.kept} | "
+            f"{step.total} | {step.density:.4f} |"
+        )
+    lines.extend([
+        "",
+        "| Layer | Kept | Total | Density |",
+        "| --- | ---: | ---: | ---: |",
+    ])
+    for name, weights in result.weights.items():
+        total = len(weights)
+        kept = sum(1 for value in weights if float(value) != 0.0)
+        density = kept / total if total else 0.0
+        lines.append(f"| {name} | {kept} | {total} | {density:.4f} |")
     return "\n".join(lines) + "\n"
 
 
@@ -442,6 +539,81 @@ def cmd_structured(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_global(args: argparse.Namespace) -> int:
+    try:
+        specs = _parse_specs(args.specs)
+        flat = _parse_weights(args.weights)
+        schedule = _parse_schedule(args.schedule)
+        initial_flat = (
+            _parse_weights(args.initial_weights)
+            if args.initial_weights is not None
+            else None
+        )
+    except ValueError as exc:
+        print(f"global: {exc}", file=sys.stderr)
+        return 2
+    if initial_flat is not None and not args.rewind:
+        print("global: --initial-weights requires --rewind", file=sys.stderr)
+        return 2
+    try:
+        model = _weights_per_layer(specs, flat)
+        initial = (
+            _weights_per_layer(specs, initial_flat)
+            if initial_flat is not None
+            else None
+        )
+        result = iterative_global_magnitude_prune_model(
+            model,
+            sparsity=args.sparsity,
+            rounds=args.rounds,
+            schedule=schedule,
+            rewind=args.rewind,
+            initial_weights=initial,
+        )
+    except (KeyError, ValueError) as exc:
+        print(f"global: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        layers = []
+        for name, weights in result.weights.items():
+            total = len(weights)
+            kept = sum(1 for value in weights if float(value) != 0.0)
+            layers.append({
+                "layer": name,
+                "kept": kept,
+                "total": total,
+                "density": kept / total if total else 0.0,
+            })
+        payload = {
+            "sparsity": result.sparsity,
+            "rounds": result.rounds,
+            "rewind": result.rewind,
+            "schedule": result.schedule,
+            "final_density": result.final_density(),
+            "final_kept": result.steps[-1].kept,
+            "final_total": result.steps[-1].total,
+            "steps": [
+                {
+                    "round": step.round,
+                    "kept": step.kept,
+                    "total": step.total,
+                    "density": step.density,
+                }
+                for step in result.steps
+            ],
+            "layers": layers,
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
+    text = _render_global_markdown(result)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+        print(f"Wrote {args.output}")
+        return 0
+    print(text)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -453,5 +625,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_imp(args)
     if args.command == "structured":
         return cmd_structured(args)
+    if args.command == "global":
+        return cmd_global(args)
     parser.error(f"unknown command: {args.command}")
     return 2

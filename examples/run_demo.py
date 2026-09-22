@@ -1,4 +1,4 @@
-"""Demo: magnitude-prune a tiny model, then structured-prune the conv layer."""
+"""Demo: magnitude, structured, and global unstructured pruning."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ from pathlib import Path
 from prune_kit import (
     conv_layer,
     dense_layer,
+    global_magnitude_prune_model,
+    iterative_global_magnitude_prune_model,
     model_channel_survival_summary,
     model_survival_summary,
 )
@@ -75,6 +77,29 @@ def main() -> None:
             f"  {row['layer']:<8} channels={row['total_channels']} "
             f"kept={row['kept_channels']} indices={row['kept_indices']}"
         )
+
+    one_shot = global_magnitude_prune_model(weights, sparsity=0.5)
+    iterative = iterative_global_magnitude_prune_model(
+        weights, sparsity=0.5, rounds=2
+    )
+    global_out = Path("examples/output/global.md")
+    glines = [
+        "# Demo: global unstructured magnitude pruning",
+        "",
+        f"- Sparsity: {iterative.sparsity:.2f}",
+        f"- Rounds: {iterative.rounds}",
+        f"- Final density: {iterative.final_density():.4f}",
+        "",
+        "| Layer | Kept | Total |",
+        "| --- | ---: | ---: |",
+    ]
+    for spec in specs:
+        layer = one_shot[spec.name]
+        kept = sum(1 for value in layer if value != 0.0)
+        glines.append(f"| {spec.name} | {kept} | {len(layer)} |")
+    global_out.write_text("\n".join(glines) + "\n", encoding="utf-8")
+    print(f"Wrote {global_out}")
+    print(f"  schedule={iterative.schedule} density={iterative.density_curve()}")
 
 
 if __name__ == "__main__":
