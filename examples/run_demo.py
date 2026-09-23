@@ -1,4 +1,4 @@
-"""Demo: magnitude, structured, and global unstructured pruning."""
+"""Demo: magnitude, structured, Taylor, and global unstructured pruning."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from prune_kit import (
     iterative_global_magnitude_prune_model,
     model_channel_survival_summary,
     model_survival_summary,
+    taylor_prune_summary,
 )
 
 
@@ -73,6 +74,41 @@ def main() -> None:
     channel_out.write_text("\n".join(clines) + "\n", encoding="utf-8")
     print(f"Wrote {channel_out}")
     for row in channel["layers"]:
+        print(
+            f"  {row['layer']:<8} channels={row['total_channels']} "
+            f"kept={row['kept_channels']} indices={row['kept_indices']}"
+        )
+
+    taylor_grads = {}
+    for spec in specs:
+        size = 1
+        for dim in spec.shape:
+            size *= int(dim)
+        if spec.kind == "conv":
+            taylor_grads[spec.name] = [0.001 * (i + 1) for i in range(size)]
+        else:
+            taylor_grads[spec.name] = [0.0] * size
+    taylor = taylor_prune_summary(
+        specs, weights, taylor_grads, density=0.5, structure="filter"
+    )
+    taylor_out = Path("examples/output/taylor.md")
+    tlines = [
+        "# Demo: first-order Taylor channel pruning",
+        "",
+        f"- Criterion: {taylor['criterion']}",
+        f"- Overall survival: {taylor['overall_survival']:.4f}",
+        "",
+        "| Layer | Total | Kept | Indices |",
+        "| --- | ---: | ---: | --- |",
+    ]
+    for row in taylor["layers"]:
+        kept = ",".join(str(index) for index in row["kept_indices"])
+        tlines.append(
+            f"| {row['layer']} | {row['total_channels']} | {row['kept_channels']} | {kept} |"
+        )
+    taylor_out.write_text("\n".join(tlines) + "\n", encoding="utf-8")
+    print(f"Wrote {taylor_out}")
+    for row in taylor["layers"]:
         print(
             f"  {row['layer']:<8} channels={row['total_channels']} "
             f"kept={row['kept_channels']} indices={row['kept_indices']}"

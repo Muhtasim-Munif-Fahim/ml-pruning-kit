@@ -34,6 +34,13 @@ from .survival import (
     per_channel_survival,
     per_layer_survival,
 )
+from .taylor import (
+    taylor_channel_scores,
+    taylor_keep_indices,
+    taylor_prune_layer,
+    taylor_prune_model,
+    taylor_prune_summary,
+)
 from .train import (
     EpochResult,
     TrainingConfig,
@@ -70,6 +77,11 @@ __all__ = [
     "model_survival_summary",
     "per_channel_survival",
     "model_channel_survival_summary",
+    "taylor_channel_scores",
+    "taylor_keep_indices",
+    "taylor_prune_layer",
+    "taylor_prune_model",
+    "taylor_prune_summary",
     "TrainingConfig",
     "EpochResult",
     "TrainingHistory",
