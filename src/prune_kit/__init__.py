@@ -20,6 +20,12 @@ from .prune import (
     total_pruned,
     weight_density,
 )
+from .snip import (
+    snip_prune_layer,
+    snip_prune_model,
+    snip_prune_summary,
+    snip_scores,
+)
 from .structured import (
     channel_groups,
     channel_norms,
@@ -82,6 +88,10 @@ __all__ = [
     "taylor_prune_layer",
     "taylor_prune_model",
     "taylor_prune_summary",
+    "snip_scores",
+    "snip_prune_layer",
+    "snip_prune_model",
+    "snip_prune_summary",
     "TrainingConfig",
     "EpochResult",
     "TrainingHistory",

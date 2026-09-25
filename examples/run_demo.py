@@ -1,4 +1,4 @@
-"""Demo: magnitude, structured, Taylor, and global unstructured pruning."""
+"""Demo: magnitude, structured, Taylor, SNIP, and global unstructured pruning."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from prune_kit import (
     iterative_global_magnitude_prune_model,
     model_channel_survival_summary,
     model_survival_summary,
+    snip_prune_summary,
     taylor_prune_summary,
 )
 
@@ -136,6 +137,40 @@ def main() -> None:
     global_out.write_text("\n".join(glines) + "\n", encoding="utf-8")
     print(f"Wrote {global_out}")
     print(f"  schedule={iterative.schedule} density={iterative.density_curve()}")
+
+    snip_grads = {}
+    for spec in specs:
+        size = 1
+        for dim in spec.shape:
+            size *= int(dim)
+        # Sensitivity is not the same ranking as magnitude: early
+        # indices get a larger gradient than later ones.
+        snip_grads[spec.name] = [1.0 / (i + 1) for i in range(size)]
+    snip = snip_prune_summary(specs, weights, snip_grads, density=0.5, scope="global")
+    snip_out = Path("examples/output/snip.md")
+    slines = [
+        "# Demo: SNIP connection-sensitivity pruning",
+        "",
+        f"- Scope: {snip['scope']}",
+        f"- Density: {snip['density']:.2f}",
+        f"- Sparsity: {snip['sparsity']:.2f}",
+        f"- Overall survival: {snip['overall_survival']:.4f}",
+        "",
+        "| Layer | Kind | Total | Kept | Score sum |",
+        "| --- | --- | ---: | ---: | ---: |",
+    ]
+    for row in snip["layers"]:
+        slines.append(
+            f"| {row['layer']} | {row['kind']} | {row['total_weights']} | "
+            f"{row['kept_weights']} | {row['score_sum']:.4f} |"
+        )
+    snip_out.write_text("\n".join(slines) + "\n", encoding="utf-8")
+    print(f"Wrote {snip_out}")
+    for row in snip["layers"]:
+        print(
+            f"  {row['layer']:<8} total={row['total_weights']} "
+            f"kept={row['kept_weights']} survival={row['survival_fraction']:.4f}"
+        )
 
 
 if __name__ == "__main__":
