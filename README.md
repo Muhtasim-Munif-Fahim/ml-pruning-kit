@@ -2,9 +2,10 @@
 
 A small, dependency-free Python toolkit for studying weight pruning in
 neural networks. It implements per-layer and global unstructured
-magnitude pruning (single-step and iterative), structured channel/filter
-pruning, first-order Taylor (soft-filter) channel pruning, per-layer
-and per-channel survival reporting, sparse-mask helpers, and a tiny CLI.
+magnitude pruning (single-step and iterative), SNIP single-shot
+connection-sensitivity pruning, structured channel/filter pruning,
+first-order Taylor (soft-filter) channel pruning, per-layer and
+per-channel survival reporting, sparse-mask helpers, and a tiny CLI.
 The codebase is intentionally framework-agnostic: every routine works
 on flat Python lists of weights, so it composes with PyTorch,
 TensorFlow, JAX, or a custom numpy implementation.
@@ -150,6 +151,55 @@ gradient is kept. That is the complement to structured L1/L2 pruning
 (weight norms only) and to global unstructured magnitude pruning
 (individual weights, no channel groups).
 
+## SNIP (connection sensitivity)
+
+SNIP (Lee, Ajanthan, and Torr, ICLR 2019) prunes in one shot, before
+training, by scoring each scalar connection with
+
+```text
+s = |weight * grad|
+```
+
+That is `|dL/dc|` at the auxiliary indicator `c = 1`, usually from a
+single minibatch at initialization. The caller supplies the gradient
+(or a precomputed `weight * grad` buffer as `contributions`). The
+lowest scores are zeroed. `density` is the fraction of connections to
+keep; the kept count is `round(density * N)`, so the target sparsity
+is `1 - density` up to that rounding.
+
+`scope="global"` (the paper, and the default) ranks every dense and
+conv connection in the model together, so a layer of salient small
+weights can be kept while a layer of large but insensitive weights is
+removed. `scope="layer"` keeps `density` inside each layer, and
+`per_layer` can override that density. Ties break toward the earlier
+layer in `specs`, then the lower index. A weight that is already zero
+stays zero.
+
+Conv kernels use the same flat C-contiguous layout as the rest of the
+kit. The summary's `masks` are 0/1 buffers from `sparse_mask_to_dense`;
+`kept_weights` counts mask ones, which can include a connection whose
+stored value was already zero.
+
+```python
+from prune_kit import dense_layer, conv_layer, snip_prune_model, snip_prune_summary
+
+specs = [
+    dense_layer("fc1", in_features=2, out_features=2),
+    conv_layer("conv1", out_channels=2, in_channels=1, kernel_h=1, kernel_w=1),
+]
+weights = {
+    "fc1": [10.0, 10.0, 0.0, 0.2],
+    "conv1": [0.1, 0.1],
+}
+grads = {
+    "fc1": [0.0, 0.0, 5.0, 1.0],
+    "conv1": [4.0, 4.0],
+}
+pruned = snip_prune_model(specs, weights, grads, density=0.5)
+summary = snip_prune_summary(specs, weights, grads, density=0.5)
+print(summary["total_kept"], summary["sparsity"])
+```
+
 ## Global unstructured magnitude pruning
 
 Per-layer magnitude pruning keeps the same fraction of weights inside
@@ -208,6 +258,7 @@ prune-kit survival --help
 prune-kit imp --help
 prune-kit structured --help
 prune-kit taylor --help
+prune-kit snip --help
 prune-kit global --help
 ```
 
@@ -220,7 +271,10 @@ prints a per-channel survival table (non-conv layers are skipped).
 The `taylor` command scores conv filters or channels by
 `|grad * weight|` (`--criterion abs|sq`, `--reduction sum|mean`) and
 prints the same kind of survival table. `--grads` is a flat buffer
-aligned with `--weights`. The `global` command prunes lowest-|w| weights to `--sparsity`
+aligned with `--weights`. The `snip` command scores every dense and
+conv connection by `|grad * weight|` and prints per-layer keep counts.
+`--scope global` (default) ranks the whole model; `--scope layer`
+keeps `--density` inside each layer. The `global` command prunes lowest-|w| weights to `--sparsity`
 (optionally over `--rounds` or an explicit `--schedule`) and prints
 the density after each round plus a per-layer kept-count table.
 `--rewind` resets survivors to `--initial-weights`.
