@@ -26,6 +26,12 @@ from .snip import (
     snip_prune_summary,
     snip_scores,
 )
+from .grasp import (
+    grasp_prune_layer,
+    grasp_prune_model,
+    grasp_prune_summary,
+    grasp_scores,
+)
 from .structured import (
     channel_groups,
     channel_norms,
@@ -92,6 +98,10 @@ __all__ = [
     "snip_prune_layer",
     "snip_prune_model",
     "snip_prune_summary",
+    "grasp_scores",
+    "grasp_prune_layer",
+    "grasp_prune_model",
+    "grasp_prune_summary",
     "TrainingConfig",
     "EpochResult",
     "TrainingHistory",
