@@ -200,6 +200,34 @@ summary = snip_prune_summary(specs, weights, grads, density=0.5)
 print(summary["total_kept"], summary["sparsity"])
 ```
 
+
+## GraSP (gradient signal preservation)
+
+Lottery-ticket IMP, SNIP, and Taylor already cover magnitude rewind,
+connection sensitivity, and first-order channel scores. GraSP (Wang,
+Zhang, Grosse) is the Hessian-aware counterpart of SNIP: each connection
+scores as ``-w * (Hg)`` where ``Hg`` is a Hessian-vector product with the
+loss gradient, and the highest scores are kept so the pruned network
+preserves gradient flow at initialization.
+
+```python
+from prune_kit import dense_layer, grasp_prune_model, grasp_scores
+
+specs = [dense_layer("fc1", in_features=4, out_features=2)]
+model = {"fc1": [0.5, -0.2, 0.1, 0.8, -0.4, 0.3, 0.9, -0.1]}
+hg = {"fc1": [0.1, -0.3, 0.2, 0.05, -0.1, 0.4, -0.2, 0.15]}
+print(grasp_scores(model["fc1"], hg["fc1"]))
+pruned = grasp_prune_model(specs, model, hg, density=0.5, scope="global")
+```
+
+```bash
+python -m prune_kit.cli grasp \
+  --specs 'fc1=dense:2x4' \
+  --weights '0.5,-0.2,0.1,0.8,-0.4,0.3,0.9,-0.1' \
+  --hg '0.1,-0.3,0.2,0.05,-0.1,0.4,-0.2,0.15' \
+  --density 0.5 --scope global
+```
+
 ## Global unstructured magnitude pruning
 
 Per-layer magnitude pruning keeps the same fraction of weights inside

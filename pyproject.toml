@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ml-pruning-kit"
 version = "0.1.0"
-description = "Per-layer and global unstructured magnitude pruning, SNIP connection-sensitivity pruning, structured channel/filter pruning, first-order Taylor soft-filter pruning, survival reporting, sparse masks, and lottery-ticket helpers."
+description = "Per-layer and global unstructured magnitude pruning, SNIP connection-sensitivity pruning, GraSP gradient-signal pruning, structured channel/filter pruning, first-order Taylor soft-filter pruning, survival reporting, sparse masks, and lottery-ticket helpers."
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
