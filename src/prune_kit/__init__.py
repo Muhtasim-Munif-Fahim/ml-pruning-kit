@@ -46,6 +46,13 @@ from .survival import (
     per_channel_survival,
     per_layer_survival,
 )
+from .wanda import (
+    activation_column_norms,
+    wanda_prune_layer,
+    wanda_prune_model,
+    wanda_prune_summary,
+    wanda_scores,
+)
 from .taylor import (
     taylor_channel_scores,
     taylor_keep_indices,
@@ -102,6 +109,11 @@ __all__ = [
     "grasp_prune_layer",
     "grasp_prune_model",
     "grasp_prune_summary",
+    "activation_column_norms",
+    "wanda_scores",
+    "wanda_prune_layer",
+    "wanda_prune_model",
+    "wanda_prune_summary",
     "TrainingConfig",
     "EpochResult",
     "TrainingHistory",
