@@ -3,7 +3,8 @@
 A small, dependency-free Python toolkit for studying weight pruning in
 neural networks. It implements per-layer and global unstructured
 magnitude pruning (single-step and iterative), SNIP single-shot
-connection-sensitivity pruning, structured channel/filter pruning,
+connection-sensitivity pruning, GraSP gradient-signal pruning, Wanda
+activation-aware pruning, structured channel/filter pruning,
 first-order Taylor (soft-filter) channel pruning, per-layer and
 per-channel survival reporting, sparse-mask helpers, and a tiny CLI.
 The codebase is intentionally framework-agnostic: every routine works
@@ -228,6 +229,62 @@ python -m prune_kit.cli grasp \
   --density 0.5 --scope global
 ```
 
+
+## Wanda (activation-aware pruning)
+
+SNIP and GraSP score connections from gradients (and Hessians). Wanda
+(Sun et al., *A Simple and Effective Pruning Approach for Large Language
+Models*) needs only a short calibration set of **input activations**.
+Each weight is scored by
+
+```text
+S_ij = |W_ij| * ||X_j||_2
+```
+
+where `||X_j||_2` is the L2 norm of input feature / channel `j` across
+the calibration batch. The lowest scores are zeroed with the same
+magnitude-style keep count used elsewhere (`round(density * N)`).
+`density` is the fraction to keep. Default `scope="layer"` matches the
+paper's per-layer sparsity; `scope="global"` ranks every connection
+together. Optional `structure="filter"` / `"channel"` aggregates Wanda
+scores per output filter or input channel and zeros whole groups
+(structured Wanda).
+
+Dense layers take column norms of length `in_features`. Conv kernels
+take per-input-channel norms of length `in_channels` (broadcast across
+`kh, kw`). Pass precomputed `|W| * ||X||` buffers as `contributions`.
+`activation_column_norms` builds the L2 column norms from a flat
+row-major calibration matrix.
+
+```python
+from prune_kit import (
+    dense_layer, activation_column_norms,
+    wanda_scores, wanda_prune_model, wanda_prune_summary,
+)
+
+specs = [dense_layer("fc1", in_features=4, out_features=2)]
+model = {"fc1": [0.5, -0.2, 0.1, 0.8, -0.4, 0.3, 0.9, -0.1]}
+# 3 calibration samples x 4 features
+activations = [
+    1.0, 0.0, 0.0, 0.0,
+    0.0, 2.0, 0.0, 0.0,
+    0.0, 0.0, 3.0, 4.0,
+]
+norms = {"fc1": activation_column_norms(activations, 4)}
+print(wanda_scores(model["fc1"], norms["fc1"], shape=(2, 4)))
+pruned = wanda_prune_model(specs, model, norms, density=0.5, scope="layer")
+summary = wanda_prune_summary(specs, model, norms, density=0.5)
+print(summary["total_kept"], summary["sparsity"])
+```
+
+```bash
+python -m prune_kit.cli wanda \
+  --specs 'fc1=dense:2x4' \
+  --weights '0.5,-0.2,0.1,0.8,-0.4,0.3,0.9,-0.1' \
+  --activation-norms '1,2,3,4' \
+  --density 0.5 --scope layer
+```
+
 ## Global unstructured magnitude pruning
 
 Per-layer magnitude pruning keeps the same fraction of weights inside
@@ -287,6 +344,8 @@ prune-kit imp --help
 prune-kit structured --help
 prune-kit taylor --help
 prune-kit snip --help
+prune-kit grasp --help
+prune-kit wanda --help
 prune-kit global --help
 ```
 
@@ -302,7 +361,7 @@ prints the same kind of survival table. `--grads` is a flat buffer
 aligned with `--weights`. The `snip` command scores every dense and
 conv connection by `|grad * weight|` and prints per-layer keep counts.
 `--scope global` (default) ranks the whole model; `--scope layer`
-keeps `--density` inside each layer. The `global` command prunes lowest-|w| weights to `--sparsity`
+keeps `--density` inside each layer. The `grasp` command scores connections by `-w*(Hg)`. The `wanda` command scores by `|W|*||X||_2` using `--activation-norms` (column norms for a single layer, or a per-weight buffer); optional `--structure filter|channel` aggregates scores into structured groups. The `global` command prunes lowest-|w| weights to `--sparsity`
 (optionally over `--rounds` or an explicit `--schedule`) and prints
 the density after each round plus a per-layer kept-count table.
 `--rewind` resets survivors to `--initial-weights`.
