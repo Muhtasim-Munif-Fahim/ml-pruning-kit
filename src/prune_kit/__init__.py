@@ -53,6 +53,13 @@ from .wanda import (
     wanda_prune_summary,
     wanda_scores,
 )
+from .lamp import (
+    frobenius_norm,
+    lamp_prune_layer,
+    lamp_prune_model,
+    lamp_prune_summary,
+    lamp_scores,
+)
 from .taylor import (
     taylor_channel_scores,
     taylor_keep_indices,
@@ -114,6 +121,11 @@ __all__ = [
     "wanda_prune_layer",
     "wanda_prune_model",
     "wanda_prune_summary",
+    "frobenius_norm",
+    "lamp_scores",
+    "lamp_prune_layer",
+    "lamp_prune_model",
+    "lamp_prune_summary",
     "TrainingConfig",
     "EpochResult",
     "TrainingHistory",

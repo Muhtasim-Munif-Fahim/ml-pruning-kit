@@ -4,7 +4,8 @@ A small, dependency-free Python toolkit for studying weight pruning in
 neural networks. It implements per-layer and global unstructured
 magnitude pruning (single-step and iterative), SNIP single-shot
 connection-sensitivity pruning, GraSP gradient-signal pruning, Wanda
-activation-aware pruning, structured channel/filter pruning,
+activation-aware pruning, LAMP layer-adaptive magnitude pruning,
+structured channel/filter pruning,
 first-order Taylor (soft-filter) channel pruning, per-layer and
 per-channel survival reporting, sparse-mask helpers, and a tiny CLI.
 The codebase is intentionally framework-agnostic: every routine works
@@ -285,6 +286,52 @@ python -m prune_kit.cli wanda \
   --density 0.5 --scope layer
 ```
 
+
+## LAMP (layer-adaptive magnitude pruning)
+
+Uniform per-layer magnitude pruning forces every layer to the same
+density. LAMP (Lee et al., *Layer-adaptive sparsity for the
+Magnitude-based Pruning*) scores each weight with a **layer-local**
+normalization so a single global ranking automatically gives different
+layers different sparsities. The classic score sorts the layer by
+ascending squared magnitude and sets
+
+```text
+score(W_[i]) = W_[i]^2 / sum_{j >= i} W_[j]^2
+```
+
+The practical alternative `mode="frobenius"` uses `|w| / ||W||_F`.
+`density` is the fraction to keep (`round(density * N)`). Default
+`scope="global"` matches the paper; `scope="layer"` keeps the same
+fraction inside each layer. Dense and conv flat buffers are both
+supported.
+
+```python
+from prune_kit import (
+    dense_layer, lamp_scores, lamp_prune_model, lamp_prune_summary,
+)
+
+specs = [
+    dense_layer("small", in_features=4, out_features=1),
+    dense_layer("large", in_features=4, out_features=1),
+]
+model = {
+    "small": [0.1, 0.2, 0.3, 0.4],
+    "large": [1.0, 2.0, 3.0, 4.0],
+}
+print(lamp_scores(model["small"], mode="lamp"))
+pruned = lamp_prune_model(specs, model, density=0.5, scope="global")
+summary = lamp_prune_summary(specs, model, density=0.5, mode="frobenius")
+print(summary["total_kept"], summary["mode"])
+```
+
+```bash
+python -m prune_kit.cli lamp \
+  --specs 'small=dense:1x4,large=dense:1x4' \
+  --weights '0.1,0.2,0.3,0.4,1,2,3,4' \
+  --density 0.5 --scope global --mode lamp
+```
+
 ## Global unstructured magnitude pruning
 
 Per-layer magnitude pruning keeps the same fraction of weights inside
@@ -346,6 +393,7 @@ prune-kit taylor --help
 prune-kit snip --help
 prune-kit grasp --help
 prune-kit wanda --help
+prune-kit lamp --help
 prune-kit global --help
 ```
 
@@ -361,7 +409,7 @@ prints the same kind of survival table. `--grads` is a flat buffer
 aligned with `--weights`. The `snip` command scores every dense and
 conv connection by `|grad * weight|` and prints per-layer keep counts.
 `--scope global` (default) ranks the whole model; `--scope layer`
-keeps `--density` inside each layer. The `grasp` command scores connections by `-w*(Hg)`. The `wanda` command scores by `|W|*||X||_2` using `--activation-norms` (column norms for a single layer, or a per-weight buffer); optional `--structure filter|channel` aggregates scores into structured groups. The `global` command prunes lowest-|w| weights to `--sparsity`
+keeps `--density` inside each layer. The `grasp` command scores connections by `-w*(Hg)`. The `wanda` command scores by `|W|*||X||_2` using `--activation-norms` (column norms for a single layer, or a per-weight buffer); optional `--structure filter|channel` aggregates scores into structured groups. The `lamp` command scores by classic LAMP (`W^2 / sum_{j>=i} W^2`) or `|w|/||W||_F` (`--mode lamp|frobenius`); `--scope global` (default) ranks every score together for layer-adaptive sparsity. The `global` command prunes lowest-|w| weights to `--sparsity`
 (optionally over `--rounds` or an explicit `--schedule`) and prints
 the density after each round plus a per-layer kept-count table.
 `--rewind` resets survivors to `--initial-weights`.
