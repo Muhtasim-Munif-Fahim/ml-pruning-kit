@@ -14,6 +14,7 @@ from .prune import iterative_magnitude_prune_model
 from .snip import snip_prune_summary
 from .grasp import grasp_prune_summary
 from .wanda import wanda_prune_summary
+from .lamp import lamp_prune_summary
 from .survival import model_channel_survival_summary, model_survival_summary
 from .taylor import taylor_prune_summary
 
@@ -363,6 +364,56 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Write the Markdown report to a file instead of stdout",
     )
     wanda.add_argument(
+        "--json", action="store_true",
+        help="Print the summary as JSON",
+    )
+
+
+    lamp = sub.add_parser(
+        "lamp",
+        help="One-shot LAMP prune by layer-adaptive magnitude scores",
+    )
+    lamp.add_argument(
+        "--density", type=float, default=0.5,
+        help="Fraction of connections to keep (default: 0.5)",
+    )
+    lamp.add_argument(
+        "--scope", choices=("global", "layer"), default="global",
+        help=(
+            "global: rank every LAMP score together (Lee et al. default); "
+            "layer: keep --density inside each layer. Default: global"
+        ),
+    )
+    lamp.add_argument(
+        "--mode", choices=("lamp", "frobenius"), default="lamp",
+        help=(
+            "lamp: classic cumulative score W^2 / sum_{j>=i} W^2; "
+            "frobenius: |w| / ||W||_F. Default: lamp"
+        ),
+    )
+    lamp.add_argument(
+        "--per-layer-density", default=None,
+        help=(
+            "Comma-separated name=density overrides, e.g. fc1=0.9,conv1=0.25. "
+            "Requires --scope layer."
+        ),
+    )
+    lamp.add_argument(
+        "--specs", required=True,
+        help=(
+            "Comma-separated layer specs, e.g. "
+            "'fc1=dense:8x4,conv1=conv:4x1x3x3'. Dense and conv layers are both pruned."
+        ),
+    )
+    lamp.add_argument(
+        "--weights", required=True,
+        help="Comma-separated floats (the flat weight buffer for the model)",
+    )
+    lamp.add_argument(
+        "--output", "-o", default=None,
+        help="Write the Markdown report to a file instead of stdout",
+    )
+    lamp.add_argument(
         "--json", action="store_true",
         help="Print the summary as JSON",
     )
@@ -720,6 +771,39 @@ def _render_wanda_markdown(summary: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+
+def _render_lamp_markdown(summary: dict) -> str:
+    lines: list[str] = [
+        "# LAMP layer-adaptive magnitude pruning",
+        "",
+        f"- Scope: {summary['scope']}",
+        f"- Mode: {summary['mode']}",
+        f"- Density: {summary['density']:.4f}",
+        f"- Sparsity: {summary['sparsity']:.4f}",
+        f"- Total weights: {summary['total']}",
+        f"- Total kept: {summary['total_kept']}",
+        f"- Overall survival: {summary['overall_survival']:.4f}",
+    ]
+    if summary["per_layer_density"]:
+        overrides = ", ".join(
+            f"{name}={float(value):.4f}"
+            for name, value in summary["per_layer_density"].items()
+        )
+        lines.append(f"- Per-layer density: {overrides}")
+    lines.extend([
+        "",
+        "| Layer | Kind | Total | Kept | Survival | Score sum | Frobenius |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+    ])
+    for row in summary["layers"]:
+        lines.append(
+            f"| {row['layer']} | {row['kind']} | {row['total_weights']} | "
+            f"{row['kept_weights']} | {row['survival_fraction']:.4f} | "
+            f"{row['score_sum']:.6f} | {row['frobenius_norm']:.6f} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _render_global_markdown(result) -> str:
     rewind_label = "yes" if result.rewind else "no"
     schedule = ", ".join(f"{value:.4f}" for value in result.schedule)
@@ -1071,6 +1155,43 @@ def cmd_wanda(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def cmd_lamp(args: argparse.Namespace) -> int:
+    try:
+        specs = _parse_specs(args.specs)
+        flat = _parse_weights(args.weights)
+        per_layer = _parse_per_layer(args.per_layer_density)
+        model = _weights_per_layer(specs, flat)
+    except ValueError as exc:
+        print(f"lamp: {exc}", file=sys.stderr)
+        return 2
+    try:
+        summary = lamp_prune_summary(
+            specs,
+            model,
+            density=args.density,
+            scope=args.scope,
+            per_layer=per_layer or None,
+            mode=args.mode,
+        )
+    except (KeyError, ValueError) as exc:
+        print(f"lamp: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        printable = dict(summary)
+        printable.pop("pruned_weights", None)
+        printable.pop("masks", None)
+        print(json.dumps(printable, indent=2))
+        return 0
+    text = _render_lamp_markdown(summary)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+        print(f"Wrote {args.output}")
+        return 0
+    print(text)
+    return 0
+
+
 def cmd_global(args: argparse.Namespace) -> int:
     try:
         specs = _parse_specs(args.specs)
@@ -1165,6 +1286,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_grasp(args)
     if args.command == "wanda":
         return cmd_wanda(args)
+    if args.command == "lamp":
+        return cmd_lamp(args)
     if args.command == "global":
         return cmd_global(args)
     parser.error(f"unknown command: {args.command}")
