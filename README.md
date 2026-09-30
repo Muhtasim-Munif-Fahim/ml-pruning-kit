@@ -5,6 +5,7 @@ neural networks. It implements per-layer and global unstructured
 magnitude pruning (single-step and iterative), SNIP single-shot
 connection-sensitivity pruning, GraSP gradient-signal pruning, Wanda
 activation-aware pruning, LAMP layer-adaptive magnitude pruning,
+Movement pruning (|W_t - W_0|),
 structured channel/filter pruning,
 first-order Taylor (soft-filter) channel pruning, per-layer and
 per-channel survival reporting, sparse-mask helpers, and a tiny CLI.
@@ -332,6 +333,45 @@ python -m prune_kit.cli lamp \
   --density 0.5 --scope global --mode lamp
 ```
 
+## Movement pruning (|W_t - W_0|)
+
+Magnitude pruning ranks by |W|. Movement pruning (Sanh et al., *Movement
+Pruning: Adaptive Sparsity by Fine-Tuning*) ranks by how far each weight
+has moved from its initialization during fine-tuning:
+
+```text
+score_i = |W_t[i] - W_0[i]|
+```
+
+Connections with the **lowest** scores are pruned first (keep largest
+movement). Pass `initial_weights` (`W_0`) or precomputed `movements`
+(absolute cumulative movement). `density` is the fraction to keep
+(`round(density * N)`). Default `scope="global"` ranks every score
+together; `scope="layer"` keeps the same fraction inside each layer.
+Dense and conv flat buffers are both supported.
+
+```python
+from prune_kit import (
+    dense_layer, movement_scores, movement_prune_model, movement_prune_summary,
+)
+
+specs = [dense_layer("fc", in_features=4, out_features=1)]
+model = {"fc": [1.0, 2.0, 3.0, 4.0]}
+initial = {"fc": [0.5, 1.5, 2.5, 0.0]}
+print(movement_scores(model["fc"], initial["fc"]))
+pruned = movement_prune_model(specs, model, initial, density=0.5)
+summary = movement_prune_summary(specs, model, initial, density=0.5)
+print(summary["total_kept"], summary["overall_survival"])
+```
+
+```bash
+python -m prune_kit.cli movement \
+  --specs 'fc=dense:1x4' \
+  --weights '1,2,3,4' \
+  --initial-weights '0.5,1.5,2.5,0' \
+  --density 0.5 --scope global
+```
+
 ## Global unstructured magnitude pruning
 
 Per-layer magnitude pruning keeps the same fraction of weights inside
@@ -409,7 +449,7 @@ prints the same kind of survival table. `--grads` is a flat buffer
 aligned with `--weights`. The `snip` command scores every dense and
 conv connection by `|grad * weight|` and prints per-layer keep counts.
 `--scope global` (default) ranks the whole model; `--scope layer`
-keeps `--density` inside each layer. The `grasp` command scores connections by `-w*(Hg)`. The `wanda` command scores by `|W|*||X||_2` using `--activation-norms` (column norms for a single layer, or a per-weight buffer); optional `--structure filter|channel` aggregates scores into structured groups. The `lamp` command scores by classic LAMP (`W^2 / sum_{j>=i} W^2`) or `|w|/||W||_F` (`--mode lamp|frobenius`); `--scope global` (default) ranks every score together for layer-adaptive sparsity. The `global` command prunes lowest-|w| weights to `--sparsity`
+keeps `--density` inside each layer. The `grasp` command scores connections by `-w*(Hg)`. The `wanda` command scores by `|W|*||X||_2` using `--activation-norms` (column norms for a single layer, or a per-weight buffer); optional `--structure filter|channel` aggregates scores into structured groups. The `lamp` command scores by classic LAMP (`W^2 / sum_{j>=i} W^2`) or `|w|/||W||_F` (`--mode lamp|frobenius`); `--scope global` (default) ranks every score together for layer-adaptive sparsity. The `movement` command scores by `|W_t - W_0|` using `--initial-weights` aligned with `--weights`; lowest movement is pruned first. The `global` command prunes lowest-|w| weights to `--sparsity`
 (optionally over `--rounds` or an explicit `--schedule`) and prints
 the density after each round plus a per-layer kept-count table.
 `--rewind` resets survivors to `--initial-weights`.
