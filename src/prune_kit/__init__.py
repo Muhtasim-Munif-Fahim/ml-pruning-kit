@@ -60,6 +60,12 @@ from .lamp import (
     lamp_prune_summary,
     lamp_scores,
 )
+from .movement import (
+    movement_prune_layer,
+    movement_prune_model,
+    movement_prune_summary,
+    movement_scores,
+)
 from .taylor import (
     taylor_channel_scores,
     taylor_keep_indices,
@@ -126,6 +132,10 @@ __all__ = [
     "lamp_prune_layer",
     "lamp_prune_model",
     "lamp_prune_summary",
+    "movement_scores",
+    "movement_prune_layer",
+    "movement_prune_model",
+    "movement_prune_summary",
     "TrainingConfig",
     "EpochResult",
     "TrainingHistory",
