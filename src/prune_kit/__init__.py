@@ -66,6 +66,13 @@ from .movement import (
     movement_prune_summary,
     movement_scores,
 )
+from .synflow import (
+    synflow_prune_layer,
+    synflow_prune_model,
+    synflow_prune_summary,
+    synflow_scores,
+    synflow_unit_grads,
+)
 from .taylor import (
     taylor_channel_scores,
     taylor_keep_indices,
@@ -136,6 +143,11 @@ __all__ = [
     "movement_prune_layer",
     "movement_prune_model",
     "movement_prune_summary",
+    "synflow_scores",
+    "synflow_unit_grads",
+    "synflow_prune_layer",
+    "synflow_prune_model",
+    "synflow_prune_summary",
     "TrainingConfig",
     "EpochResult",
     "TrainingHistory",

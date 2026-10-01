@@ -16,6 +16,7 @@ from .grasp import grasp_prune_summary
 from .wanda import wanda_prune_summary
 from .lamp import lamp_prune_summary
 from .movement import movement_prune_summary
+from .synflow import synflow_prune_summary
 from .survival import model_channel_survival_summary, model_survival_summary
 from .taylor import taylor_prune_summary
 
@@ -468,6 +469,56 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print the summary as JSON",
     )
 
+    synflow = sub.add_parser(
+        "synflow",
+        help="One-shot SynFlow prune by |W| * |dR/dW| synaptic flow (Tanaka et al.)",
+    )
+    synflow.add_argument(
+        "--density", type=float, default=0.5,
+        help="Fraction of connections to keep (default: 0.5)",
+    )
+    synflow.add_argument(
+        "--scope", choices=("global", "layer"), default="global",
+        help=(
+            "global: rank every SynFlow score together; "
+            "layer: keep --density inside each layer. Default: global"
+        ),
+    )
+    synflow.add_argument(
+        "--per-layer-density", default=None,
+        help=(
+            "Comma-separated name=density overrides, e.g. fc1=0.9,conv1=0.25. "
+            "Requires --scope layer."
+        ),
+    )
+    synflow.add_argument(
+        "--specs", required=True,
+        help=(
+            "Comma-separated layer specs, e.g. "
+            "'fc1=dense:8x4,conv1=conv:4x1x3x3'. Dense and conv layers are both pruned."
+        ),
+    )
+    synflow.add_argument(
+        "--weights", required=True,
+        help="Comma-separated floats (the flat weight buffer for the model)",
+    )
+    synflow.add_argument(
+        "--grads", default=None,
+        help=(
+            "Optional comma-separated dR/dW aligned with --weights. "
+            "Scores are |W| * |grad|. When omitted, uses data-free SynFlow "
+            "(unit-input linearization when layers chain, else exponential proxy)."
+        ),
+    )
+    synflow.add_argument(
+        "--output", "-o", default=None,
+        help="Write the Markdown report to a file instead of stdout",
+    )
+    synflow.add_argument(
+        "--json", action="store_true",
+        help="Print the summary as JSON",
+    )
+
     global_cmd = sub.add_parser(
         "global",
         help="Global unstructured magnitude pruning to a target sparsity",
@@ -850,6 +901,37 @@ def _render_lamp_markdown(summary: dict) -> str:
             f"| {row['layer']} | {row['kind']} | {row['total_weights']} | "
             f"{row['kept_weights']} | {row['survival_fraction']:.4f} | "
             f"{row['score_sum']:.6f} | {row['frobenius_norm']:.6f} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _render_synflow_markdown(summary: dict) -> str:
+    lines: list[str] = [
+        "# SynFlow pruning (|W| * |dR/dW|)",
+        "",
+        f"- Scope: {summary['scope']}",
+        f"- Density: {summary['density']:.4f}",
+        f"- Sparsity: {summary['sparsity']:.4f}",
+        f"- Total weights: {summary['total']}",
+        f"- Total kept: {summary['total_kept']}",
+        f"- Overall survival: {summary['overall_survival']:.4f}",
+    ]
+    if summary["per_layer_density"]:
+        overrides = ", ".join(
+            f"{name}={float(value):.4f}"
+            for name, value in summary["per_layer_density"].items()
+        )
+        lines.append(f"- Per-layer density: {overrides}")
+    lines.extend([
+        "",
+        "| Layer | Kind | Total | Kept | Survival | Score sum |",
+        "| --- | --- | ---: | ---: | ---: | ---: |",
+    ])
+    for row in summary["layers"]:
+        lines.append(
+            f"| {row['layer']} | {row['kind']} | {row['total_weights']} | "
+            f"{row['kept_weights']} | {row['survival_fraction']:.4f} | "
+            f"{row['score_sum']:.6f} |"
         )
     return "\n".join(lines) + "\n"
 
@@ -1273,6 +1355,54 @@ def cmd_lamp(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_synflow(args: argparse.Namespace) -> int:
+    try:
+        specs = _parse_specs(args.specs)
+        flat = _parse_weights(args.weights)
+        per_layer = _parse_per_layer(args.per_layer_density)
+        grad_flat = (
+            _parse_weights(args.grads) if args.grads is not None else None
+        )
+        if grad_flat is not None and len(grad_flat) != len(flat):
+            raise ValueError(
+                f"grads has {len(grad_flat)} values, weights has {len(flat)}"
+            )
+        model = _weights_per_layer(specs, flat)
+        grads = (
+            _weights_per_layer(specs, grad_flat)
+            if grad_flat is not None
+            else None
+        )
+    except ValueError as exc:
+        print(f"synflow: {exc}", file=sys.stderr)
+        return 2
+    try:
+        summary = synflow_prune_summary(
+            specs,
+            model,
+            grads,
+            density=args.density,
+            scope=args.scope,
+            per_layer=per_layer or None,
+        )
+    except (KeyError, ValueError) as exc:
+        print(f"synflow: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        printable = dict(summary)
+        printable.pop("pruned_weights", None)
+        printable.pop("masks", None)
+        print(json.dumps(printable, indent=2))
+        return 0
+    text = _render_synflow_markdown(summary)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+        print(f"Wrote {args.output}")
+        return 0
+    print(text)
+    return 0
+
+
 def cmd_movement(args: argparse.Namespace) -> int:
     try:
         specs = _parse_specs(args.specs)
@@ -1414,6 +1544,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_lamp(args)
     if args.command == "movement":
         return cmd_movement(args)
+    if args.command == "synflow":
+        return cmd_synflow(args)
     if args.command == "global":
         return cmd_global(args)
     parser.error(f"unknown command: {args.command}")

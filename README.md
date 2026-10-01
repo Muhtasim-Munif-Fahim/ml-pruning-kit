@@ -5,7 +5,7 @@ neural networks. It implements per-layer and global unstructured
 magnitude pruning (single-step and iterative), SNIP single-shot
 connection-sensitivity pruning, GraSP gradient-signal pruning, Wanda
 activation-aware pruning, LAMP layer-adaptive magnitude pruning,
-Movement pruning (|W_t - W_0|),
+Movement pruning (|W_t - W_0|), SynFlow synaptic-flow pruning (|W| * |dR/dW|),
 structured channel/filter pruning,
 first-order Taylor (soft-filter) channel pruning, per-layer and
 per-channel survival reporting, sparse-mask helpers, and a tiny CLI.
@@ -369,6 +369,47 @@ python -m prune_kit.cli movement \
   --specs 'fc=dense:1x4' \
   --weights '1,2,3,4' \
   --initial-weights '0.5,1.5,2.5,0' \
+  --density 0.5 --scope global
+```
+
+
+## SynFlow (synaptic flow)
+
+SynFlow (Tanaka et al., *Pruning Neural Networks Without Any Data by
+Iteratively Conserving Synaptic Flow*) is a **data-free** one-shot
+pruner. After linearizing parameters (absolute values; identity
+activations), each connection is scored by the product of its magnitude
+and the gradient of the synaptic-flow objective ``R`` on unit inputs:
+
+```text
+score = |W| * |∂R/∂W|
+```
+
+Connections with the **lowest** scores are pruned first. Pass ``grads``
+(``∂R/∂W``) or precomputed ``contributions``. When both are omitted, the
+kit uses linearized multi-layer unit-input SynFlow when layer shapes
+chain, otherwise the common single-layer **exponential** proxy
+``|W_ij| * exp(∑_k |W_ik|)``. ``density`` is the fraction to keep
+(``round(density * N)``). Default ``scope="global"``; dense and conv
+flat buffers are both supported.
+
+```python
+from prune_kit import (
+    dense_layer, synflow_scores, synflow_prune_model, synflow_prune_summary,
+)
+
+specs = [dense_layer("fc", in_features=4, out_features=1)]
+model = {"fc": [1.0, 2.0, 3.0, 4.0]}
+print(synflow_scores(model["fc"], shape=(1, 4)))  # exponential proxy
+pruned = synflow_prune_model(specs, model, density=0.5)
+summary = synflow_prune_summary(specs, model, density=0.5)
+print(summary["total_kept"], summary["overall_survival"])
+```
+
+```bash
+python -m prune_kit.cli synflow \
+  --specs 'fc=dense:1x4' \
+  --weights '1,2,3,4' \
   --density 0.5 --scope global
 ```
 
