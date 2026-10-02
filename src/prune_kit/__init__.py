@@ -73,6 +73,12 @@ from .synflow import (
     synflow_scores,
     synflow_unit_grads,
 )
+from .obd import (
+    obd_prune_layer,
+    obd_prune_model,
+    obd_prune_summary,
+    obd_scores,
+)
 from .taylor import (
     taylor_channel_scores,
     taylor_keep_indices,
@@ -148,6 +154,10 @@ __all__ = [
     "synflow_prune_layer",
     "synflow_prune_model",
     "synflow_prune_summary",
+    "obd_scores",
+    "obd_prune_layer",
+    "obd_prune_model",
+    "obd_prune_summary",
     "TrainingConfig",
     "EpochResult",
     "TrainingHistory",

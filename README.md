@@ -6,6 +6,7 @@ magnitude pruning (single-step and iterative), SNIP single-shot
 connection-sensitivity pruning, GraSP gradient-signal pruning, Wanda
 activation-aware pruning, LAMP layer-adaptive magnitude pruning,
 Movement pruning (|W_t - W_0|), SynFlow synaptic-flow pruning (|W| * |dR/dW|),
+Optimal Brain Damage (OBD) second-order saliency ((1/2)*H_ii*w^2),
 structured channel/filter pruning,
 first-order Taylor (soft-filter) channel pruning, per-layer and
 per-channel survival reporting, sparse-mask helpers, and a tiny CLI.
@@ -413,6 +414,48 @@ python -m prune_kit.cli synflow \
   --density 0.5 --scope global
 ```
 
+
+## Optimal Brain Damage (OBD)
+
+Optimal Brain Damage (LeCun, Denker, Solla, *Optimal Brain Damage*) is a
+classic **second-order** one-shot pruner. Each connection is scored by
+how much the loss would change if that weight were set to zero, using
+the diagonal of the Hessian:
+
+```text
+saliency_i ≈ (1/2) * H_ii * w_i^2
+```
+
+Connections with the **lowest** saliency are pruned first. Pass
+`hess_diag` (precomputed diagonal Hessian `H_ii`) for the exact OBD
+form, or `grads` to use the common **squared-gradient** diagonal proxy
+`H_ii ≈ g_i^2` (so saliency becomes `(1/2) * g_i^2 * w_i^2`) when a
+true Hessian is unavailable. Pass exactly one. `density` is the
+fraction to keep (`round(density * N)`). Default `scope="global"`;
+dense and conv flat buffers are both supported.
+
+```python
+from prune_kit import (
+    dense_layer, obd_scores, obd_prune_model, obd_prune_summary,
+)
+
+specs = [dense_layer("fc", in_features=4, out_features=1)]
+model = {"fc": [1.0, 2.0, 3.0, 4.0]}
+hess = {"fc": [1.0, 1.0, 0.25, 0.25]}
+print(obd_scores(model["fc"], hess["fc"]))
+pruned = obd_prune_model(specs, model, hess, density=0.5)
+summary = obd_prune_summary(specs, model, hess, density=0.5)
+print(summary["total_kept"], summary["overall_survival"])
+```
+
+```bash
+python -m prune_kit.cli obd \
+  --specs 'fc=dense:1x4' \
+  --weights '1,2,3,4' \
+  --hess-diag '1,1,0.25,0.25' \
+  --density 0.5 --scope global
+```
+
 ## Global unstructured magnitude pruning
 
 Per-layer magnitude pruning keeps the same fraction of weights inside
@@ -475,6 +518,9 @@ prune-kit snip --help
 prune-kit grasp --help
 prune-kit wanda --help
 prune-kit lamp --help
+prune-kit movement --help
+prune-kit synflow --help
+prune-kit obd --help
 prune-kit global --help
 ```
 
@@ -490,7 +536,7 @@ prints the same kind of survival table. `--grads` is a flat buffer
 aligned with `--weights`. The `snip` command scores every dense and
 conv connection by `|grad * weight|` and prints per-layer keep counts.
 `--scope global` (default) ranks the whole model; `--scope layer`
-keeps `--density` inside each layer. The `grasp` command scores connections by `-w*(Hg)`. The `wanda` command scores by `|W|*||X||_2` using `--activation-norms` (column norms for a single layer, or a per-weight buffer); optional `--structure filter|channel` aggregates scores into structured groups. The `lamp` command scores by classic LAMP (`W^2 / sum_{j>=i} W^2`) or `|w|/||W||_F` (`--mode lamp|frobenius`); `--scope global` (default) ranks every score together for layer-adaptive sparsity. The `movement` command scores by `|W_t - W_0|` using `--initial-weights` aligned with `--weights`; lowest movement is pruned first. The `global` command prunes lowest-|w| weights to `--sparsity`
+keeps `--density` inside each layer. The `grasp` command scores connections by `-w*(Hg)`. The `wanda` command scores by `|W|*||X||_2` using `--activation-norms` (column norms for a single layer, or a per-weight buffer); optional `--structure filter|channel` aggregates scores into structured groups. The `lamp` command scores by classic LAMP (`W^2 / sum_{j>=i} W^2`) or `|w|/||W||_F` (`--mode lamp|frobenius`); `--scope global` (default) ranks every score together for layer-adaptive sparsity. The `movement` command scores by `|W_t - W_0|` using `--initial-weights` aligned with `--weights`; lowest movement is pruned first. The `synflow` command scores by `|W| * |dR/dW|` (optional `--grads`, else data-free unit-input / exponential proxy). The `obd` command scores by `(1/2)*H_ii*w^2` using `--hess-diag` or squared-gradient proxy via `--grads`. The `global` command prunes lowest-|w| weights to `--sparsity`
 (optionally over `--rounds` or an explicit `--schedule`) and prints
 the density after each round plus a per-layer kept-count table.
 `--rewind` resets survivors to `--initial-weights`.
