@@ -79,6 +79,12 @@ from .obd import (
     obd_prune_summary,
     obd_scores,
 )
+from .obs import (
+    obs_prune_layer,
+    obs_prune_model,
+    obs_prune_summary,
+    obs_scores,
+)
 from .taylor import (
     taylor_channel_scores,
     taylor_keep_indices,
@@ -158,6 +164,10 @@ __all__ = [
     "obd_prune_layer",
     "obd_prune_model",
     "obd_prune_summary",
+    "obs_scores",
+    "obs_prune_layer",
+    "obs_prune_model",
+    "obs_prune_summary",
     "TrainingConfig",
     "EpochResult",
     "TrainingHistory",

@@ -18,6 +18,7 @@ from .lamp import lamp_prune_summary
 from .movement import movement_prune_summary
 from .synflow import synflow_prune_summary
 from .obd import obd_prune_summary
+from .obs import obs_prune_summary
 from .survival import model_channel_survival_summary, model_survival_summary
 from .taylor import taylor_prune_summary
 
@@ -578,6 +579,74 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print the summary as JSON",
     )
 
+
+    obs = sub.add_parser(
+        "obs",
+        help="One-shot OBS prune by w^2/(2*H^{-1}_ii) inverse-Hessian saliency (Hassibi & Stork)",
+    )
+    obs.add_argument(
+        "--density", type=float, default=0.5,
+        help="Fraction of connections to keep (default: 0.5)",
+    )
+    obs.add_argument(
+        "--scope", choices=("global", "layer"), default="global",
+        help=(
+            "global: rank every OBS saliency together; "
+            "layer: keep --density inside each layer. Default: global"
+        ),
+    )
+    obs.add_argument(
+        "--per-layer-density", default=None,
+        help=(
+            "Comma-separated name=density overrides, e.g. fc1=0.9,conv1=0.25. "
+            "Requires --scope layer."
+        ),
+    )
+    obs.add_argument(
+        "--specs", required=True,
+        help=(
+            "Comma-separated layer specs, e.g. "
+            "'fc1=dense:8x4,conv1=conv:4x1x3x3'. Dense and conv layers are both pruned."
+        ),
+    )
+    obs.add_argument(
+        "--weights", required=True,
+        help="Comma-separated floats (the flat weight buffer for the model)",
+    )
+    obs.add_argument(
+        "--hess-inv-diag", default=None,
+        help=(
+            "Comma-separated inverse-Hessian diagonal H^{-1}_ii aligned with "
+            "--weights. Scores are w^2/(2*H^{-1}_ii) (exact OBS). Mutually "
+            "exclusive with --hess-diag and --grads."
+        ),
+    )
+    obs.add_argument(
+        "--hess-diag", default=None,
+        help=(
+            "Comma-separated diagonal Hessian H_ii aligned with --weights. "
+            "Uses proxy H^{-1}_ii ≈ 1/(H_ii + eps). Mutually exclusive with "
+            "--hess-inv-diag and --grads."
+        ),
+    )
+    obs.add_argument(
+        "--grads", default=None,
+        help=(
+            "Optional comma-separated gradients aligned with --weights. "
+            "Uses squared-gradient proxy H_ii ≈ g_i^2 then "
+            "H^{-1}_ii ≈ 1/(g_i^2 + eps). Mutually exclusive with "
+            "--hess-inv-diag and --hess-diag."
+        ),
+    )
+    obs.add_argument(
+        "--output", "-o", default=None,
+        help="Write the Markdown report to a file instead of stdout",
+    )
+    obs.add_argument(
+        "--json", action="store_true",
+        help="Print the summary as JSON",
+    )
+
     global_cmd = sub.add_parser(
         "global",
         help="Global unstructured magnitude pruning to a target sparsity",
@@ -999,6 +1068,38 @@ def _render_synflow_markdown(summary: dict) -> str:
 def _render_obd_markdown(summary: dict) -> str:
     lines: list[str] = [
         "# OBD pruning ((1/2)*H_ii*w^2)",
+        "",
+        f"- Scope: {summary['scope']}",
+        f"- Density: {summary['density']:.4f}",
+        f"- Sparsity: {summary['sparsity']:.4f}",
+        f"- Total weights: {summary['total']}",
+        f"- Total kept: {summary['total_kept']}",
+        f"- Overall survival: {summary['overall_survival']:.4f}",
+    ]
+    if summary["per_layer_density"]:
+        overrides = ", ".join(
+            f"{name}={float(value):.4f}"
+            for name, value in summary["per_layer_density"].items()
+        )
+        lines.append(f"- Per-layer density: {overrides}")
+    lines.extend([
+        "",
+        "| Layer | Kind | Total | Kept | Survival | Score sum |",
+        "| --- | --- | ---: | ---: | ---: | ---: |",
+    ])
+    for row in summary["layers"]:
+        lines.append(
+            f"| {row['layer']} | {row['kind']} | {row['total_weights']} | "
+            f"{row['kept_weights']} | {row['survival_fraction']:.4f} | "
+            f"{row['score_sum']:.6f} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+
+def _render_obs_markdown(summary: dict) -> str:
+    lines: list[str] = [
+        "# OBS pruning (w^2/(2*H^{-1}_ii))",
         "",
         f"- Scope: {summary['scope']}",
         f"- Density: {summary['density']:.4f}",
@@ -1603,6 +1704,94 @@ def cmd_obd(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def cmd_obs(args: argparse.Namespace) -> int:
+    try:
+        specs = _parse_specs(args.specs)
+        flat = _parse_weights(args.weights)
+        per_layer = _parse_per_layer(args.per_layer_density)
+        hinv_flat = (
+            _parse_weights(args.hess_inv_diag)
+            if args.hess_inv_diag is not None
+            else None
+        )
+        hess_flat = (
+            _parse_weights(args.hess_diag) if args.hess_diag is not None else None
+        )
+        grad_flat = (
+            _parse_weights(args.grads) if args.grads is not None else None
+        )
+        provided = sum(
+            x is not None for x in (hinv_flat, hess_flat, grad_flat)
+        )
+        if provided > 1:
+            raise ValueError(
+                "pass --hess-inv-diag, --hess-diag, or --grads — exactly one, not both"
+            )
+        if provided == 0:
+            raise ValueError(
+                "--hess-inv-diag, --hess-diag, or --grads is required"
+            )
+        if hinv_flat is not None and len(hinv_flat) != len(flat):
+            raise ValueError(
+                f"hess-inv-diag has {len(hinv_flat)} values, weights has {len(flat)}"
+            )
+        if hess_flat is not None and len(hess_flat) != len(flat):
+            raise ValueError(
+                f"hess-diag has {len(hess_flat)} values, weights has {len(flat)}"
+            )
+        if grad_flat is not None and len(grad_flat) != len(flat):
+            raise ValueError(
+                f"grads has {len(grad_flat)} values, weights has {len(flat)}"
+            )
+        model = _weights_per_layer(specs, flat)
+        hess_inv_diag = (
+            _weights_per_layer(specs, hinv_flat)
+            if hinv_flat is not None
+            else None
+        )
+        hess_diag = (
+            _weights_per_layer(specs, hess_flat)
+            if hess_flat is not None
+            else None
+        )
+        grads = (
+            _weights_per_layer(specs, grad_flat)
+            if grad_flat is not None
+            else None
+        )
+    except ValueError as exc:
+        print(f"obs: {exc}", file=sys.stderr)
+        return 2
+    try:
+        summary = obs_prune_summary(
+            specs,
+            model,
+            hess_inv_diag,
+            hess_diag=hess_diag,
+            grads=grads,
+            density=args.density,
+            scope=args.scope,
+            per_layer=per_layer or None,
+        )
+    except (KeyError, ValueError) as exc:
+        print(f"obs: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        printable = dict(summary)
+        printable.pop("pruned_weights", None)
+        printable.pop("masks", None)
+        print(json.dumps(printable, indent=2))
+        return 0
+    text = _render_obs_markdown(summary)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+        print(f"Wrote {args.output}")
+        return 0
+    print(text)
+    return 0
+
+
 def cmd_global(args: argparse.Namespace) -> int:
     try:
         specs = _parse_specs(args.specs)
@@ -1705,6 +1894,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_synflow(args)
     if args.command == "obd":
         return cmd_obd(args)
+    if args.command == "obs":
+        return cmd_obs(args)
     if args.command == "global":
         return cmd_global(args)
     parser.error(f"unknown command: {args.command}")
