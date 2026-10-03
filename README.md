@@ -7,6 +7,7 @@ connection-sensitivity pruning, GraSP gradient-signal pruning, Wanda
 activation-aware pruning, LAMP layer-adaptive magnitude pruning,
 Movement pruning (|W_t - W_0|), SynFlow synaptic-flow pruning (|W| * |dR/dW|),
 Optimal Brain Damage (OBD) second-order saliency ((1/2)*H_ii*w^2),
+Optimal Brain Surgeon (OBS) inverse-Hessian saliency (w^2/(2*H^{-1}_ii)),
 structured channel/filter pruning,
 first-order Taylor (soft-filter) channel pruning, per-layer and
 per-channel survival reporting, sparse-mask helpers, and a tiny CLI.
@@ -453,6 +454,52 @@ python -m prune_kit.cli obd \
   --specs 'fc=dense:1x4' \
   --weights '1,2,3,4' \
   --hess-diag '1,1,0.25,0.25' \
+  --density 0.5 --scope global
+```
+
+## Optimal Brain Surgeon (OBS)
+
+Optimal Brain Surgeon (Hassibi & Stork, *Optimal Brain Surgeon*) is the
+classic **inverse-Hessian** follow-up to OBD. Each connection is scored by
+
+```text
+saliency_i ≈ w_i^2 / (2 * H^{-1}_ii)
+```
+
+Connections with the **lowest** saliency are pruned first. This kit
+implements the saliency ranking / one-shot mask only (not the optimal
+weight update of full OBS). Pass **exactly one** of:
+
+* `hess_inv_diag` — diagonal of `H^{-1}` (**exact OBS** formula).
+* `hess_diag` — diagonal of `H`, using the reciprocal proxy
+  `H^{-1}_ii ≈ 1/(H_ii + eps)` (documented proxy; equals OBD when `H`
+  is diagonal).
+* `grads` — squared-gradient proxy `H_ii ≈ g_i^2` then
+  `H^{-1}_ii ≈ 1/(g_i^2 + eps)` (practical stand-in, not exact OBS).
+
+`density` is the fraction to keep (`round(density * N)`). Default
+`scope="global"`; dense and conv flat buffers are both supported.
+
+```python
+from prune_kit import (
+    dense_layer, obs_scores, obs_prune_model, obs_prune_summary,
+)
+
+specs = [dense_layer("fc", in_features=4, out_features=1)]
+model = {"fc": [1.0, 2.0, 3.0, 4.0]}
+# Exact OBS with inverse-Hessian diagonal (here H = I => H^{-1} = I)
+hinv = {"fc": [1.0, 1.0, 1.0, 1.0]}
+print(obs_scores(model["fc"], hinv["fc"]))
+pruned = obs_prune_model(specs, model, hinv, density=0.5)
+summary = obs_prune_summary(specs, model, hinv, density=0.5)
+print(summary["total_kept"], summary["overall_survival"])
+```
+
+```bash
+python -m prune_kit.cli obs \
+  --specs 'fc=dense:1x4' \
+  --weights '1,2,3,4' \
+  --hess-inv-diag '1,1,1,1' \
   --density 0.5 --scope global
 ```
 
