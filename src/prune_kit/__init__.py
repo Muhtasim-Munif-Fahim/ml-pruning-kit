@@ -98,6 +98,13 @@ from .train import (
     TrainingHistory,
     train_with_pruning,
 )
+from .gradual import (
+    GradualPruneResult,
+    GradualPruneStep,
+    gradual_magnitude_prune_model,
+    polynomial_sparsity,
+    polynomial_sparsity_schedule,
+)
 
 __all__ = [
     "LayerSpec",
@@ -175,4 +182,9 @@ __all__ = [
     "GlobalPruneResult",
     "global_magnitude_prune_model",
     "iterative_global_magnitude_prune_model",
+    "GradualPruneStep",
+    "GradualPruneResult",
+    "polynomial_sparsity",
+    "polynomial_sparsity_schedule",
+    "gradual_magnitude_prune_model",
 ]
