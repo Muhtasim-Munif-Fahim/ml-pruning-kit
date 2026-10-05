@@ -8,6 +8,7 @@ activation-aware pruning, LAMP layer-adaptive magnitude pruning,
 Movement pruning (|W_t - W_0|), SynFlow synaptic-flow pruning (|W| * |dR/dW|),
 Optimal Brain Damage (OBD) second-order saliency ((1/2)*H_ii*w^2),
 Optimal Brain Surgeon (OBS) inverse-Hessian saliency (w^2/(2*H^{-1}_ii)),
+Zhu & Gupta gradual / polynomial magnitude pruning,
 structured channel/filter pruning,
 first-order Taylor (soft-filter) channel pruning, per-layer and
 per-channel survival reporting, sparse-mask helpers, and a tiny CLI.
@@ -74,6 +75,44 @@ The simulated training loop in `train_with_pruning` can do the same
 reset between prune steps (`TrainingConfig(rewind=True)`), and can
 compound sparsity with `prune_fraction` instead of an absolute
 `prune_density`.
+
+## Gradual magnitude pruning (Zhu & Gupta)
+
+Instead of pruning once, Zhu & Gupta's gradual schedule raises the target
+sparsity smoothly during training with a cubic (default) polynomial:
+
+```
+s_t = s_f + (s_i - s_f) * (1 - (t - t0) / (t_f - t0))^3
+```
+
+`gradual_magnitude_prune_model` simulates that schedule (and optional
+optimizer `update_fn` between events). Masks are monotone: once a weight is
+pruned it stays zero. Without an `update_fn` the final mask equals one-shot
+magnitude pruning at `density = 1 - final_sparsity`.
+
+```python
+from prune_kit import gradual_magnitude_prune_model, polynomial_sparsity_schedule
+
+model = {"fc1": [0.1 * i for i in range(20)], "fc2": [0.05 * i for i in range(10)]}
+result = gradual_magnitude_prune_model(
+    model,
+    final_sparsity=0.5,
+    begin_step=0,
+    end_step=100,
+    frequency=20,
+    scope="layer",
+)
+print(result.final_density(), result.target_curve())
+print(polynomial_sparsity_schedule(final_sparsity=0.5, end_step=100, frequency=20)[:3])
+```
+
+CLI:
+
+```bash
+prune-kit gradual --specs 'fc1=dense:4x5,fc2=dense:2x5' \
+  --weights $(python -c 'print(",".join(str(0.1*i) for i in range(30)))') \
+  --final-sparsity 0.5 --end-step 100 --frequency 20 --json
+```
 
 ## Structured channel / filter pruning
 

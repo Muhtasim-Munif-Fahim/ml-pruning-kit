@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .global_unstructured import iterative_global_magnitude_prune_model
+from .gradual import gradual_magnitude_prune_model
 from .layers import LayerSpec, conv_layer, dense_layer
 from .masks import dense_mask, mask_density, sparse_mask_to_dense
 from .prune import iterative_magnitude_prune_model
@@ -647,6 +648,63 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print the summary as JSON",
     )
 
+
+    gradual = sub.add_parser(
+        "gradual",
+        help="Zhu & Gupta gradual / polynomial magnitude pruning schedule",
+    )
+    gradual.add_argument(
+        "--final-sparsity", type=float, required=True,
+        help="Target sparsity at end_step (in [0, 1])",
+    )
+    gradual.add_argument(
+        "--end-step", type=int, required=True,
+        help="Training step of the final pruning event",
+    )
+    gradual.add_argument(
+        "--initial-sparsity", type=float, default=0.0,
+        help="Sparsity at begin_step (default: 0.0)",
+    )
+    gradual.add_argument(
+        "--begin-step", type=int, default=0,
+        help="First pruning event step (default: 0)",
+    )
+    gradual.add_argument(
+        "--frequency", type=int, default=1,
+        help="Steps between pruning events (default: 1)",
+    )
+    gradual.add_argument(
+        "--exponent", type=float, default=3.0,
+        help="Polynomial exponent (default: 3 = cubic)",
+    )
+    gradual.add_argument(
+        "--scope", choices=["layer", "global"], default="layer",
+        help="Rank magnitudes per layer or across the model (default: layer)",
+    )
+    gradual.add_argument(
+        "--total-steps", type=int, default=None,
+        help="Simulate this many steps (default: end_step + 1)",
+    )
+    gradual.add_argument(
+        "--specs", required=True,
+        help=(
+            "Comma-separated layer specs, e.g. 'fc1=dense:784x256,fc2=dense:256x10'. "
+            "The first N weights in --weights are assigned to the first spec in order."
+        ),
+    )
+    gradual.add_argument(
+        "--weights", required=True,
+        help="Comma-separated floats (typically trained weights)",
+    )
+    gradual.add_argument(
+        "--output", "-o", default=None,
+        help="Write the Markdown report to a file instead of stdout",
+    )
+    gradual.add_argument(
+        "--json", action="store_true",
+        help="Print the result as JSON",
+    )
+
     global_cmd = sub.add_parser(
         "global",
         help="Global unstructured magnitude pruning to a target sparsity",
@@ -1157,6 +1215,41 @@ def _render_movement_markdown(summary: dict) -> str:
             f"{row['score_sum']:.6f} |"
         )
     return "\n".join(lines) + "\n"
+
+
+
+def _render_gradual_markdown(result) -> str:
+    lines: list[str] = [
+        "# Gradual magnitude pruning (Zhu & Gupta)",
+        "",
+        f"- scope: `{result.scope}`",
+        f"- initial_sparsity: `{result.initial_sparsity}`",
+        f"- final_sparsity: `{result.final_sparsity}`",
+        f"- begin_step: `{result.begin_step}`",
+        f"- end_step: `{result.end_step}`",
+        f"- frequency: `{result.frequency}`",
+        f"- exponent: `{result.exponent}`",
+        f"- events: `{len(result.steps)}`",
+        f"- final_density: `{result.final_density():.6f}`",
+        "",
+        "## Events",
+        "",
+        "| step | target_sparsity | kept | total | density |",
+        "| ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for step in result.steps:
+        lines.append(
+            f"| {step.step} | {step.target_sparsity:.6f} | {step.kept} | "
+            f"{step.total} | {step.density:.6f} |"
+        )
+    lines.extend(["", "## Per-layer (final)", ""])
+    for name, weights in result.weights.items():
+        total = len(weights)
+        kept = sum(1 for value in weights if float(value) != 0.0)
+        dens = kept / total if total else 0.0
+        lines.append(f"- `{name}`: kept {kept}/{total} (density {dens:.6f})")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _render_global_markdown(result) -> str:
@@ -1792,6 +1885,72 @@ def cmd_obs(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def cmd_gradual(args: argparse.Namespace) -> int:
+    try:
+        specs = _parse_specs(args.specs)
+        flat = _parse_weights(args.weights)
+        model = _weights_per_layer(specs, flat)
+        result = gradual_magnitude_prune_model(
+            model,
+            final_sparsity=args.final_sparsity,
+            end_step=args.end_step,
+            initial_sparsity=args.initial_sparsity,
+            begin_step=args.begin_step,
+            frequency=args.frequency,
+            exponent=args.exponent,
+            scope=args.scope,
+            total_steps=args.total_steps,
+        )
+    except (KeyError, ValueError) as exc:
+        print(f"gradual: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        layers = []
+        for name, weights in result.weights.items():
+            total = len(weights)
+            kept = sum(1 for value in weights if float(value) != 0.0)
+            layers.append({
+                "layer": name,
+                "kept": kept,
+                "total": total,
+                "density": kept / total if total else 0.0,
+            })
+        payload = {
+            "scope": result.scope,
+            "initial_sparsity": result.initial_sparsity,
+            "final_sparsity": result.final_sparsity,
+            "begin_step": result.begin_step,
+            "end_step": result.end_step,
+            "frequency": result.frequency,
+            "exponent": result.exponent,
+            "final_density": result.final_density(),
+            "target_curve": result.target_curve(),
+            "sparsity_curve": result.sparsity_curve(),
+            "steps": [
+                {
+                    "step": step.step,
+                    "target_sparsity": step.target_sparsity,
+                    "kept": step.kept,
+                    "total": step.total,
+                    "density": step.density,
+                    "layer_kept": step.layer_kept,
+                }
+                for step in result.steps
+            ],
+            "layers": layers,
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
+    text = _render_gradual_markdown(result)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+        print(f"Wrote {args.output}")
+        return 0
+    print(text)
+    return 0
+
+
 def cmd_global(args: argparse.Namespace) -> int:
     try:
         specs = _parse_specs(args.specs)
@@ -1896,6 +2055,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_obd(args)
     if args.command == "obs":
         return cmd_obs(args)
+    if args.command == "gradual":
+        return cmd_gradual(args)
     if args.command == "global":
         return cmd_global(args)
     parser.error(f"unknown command: {args.command}")
