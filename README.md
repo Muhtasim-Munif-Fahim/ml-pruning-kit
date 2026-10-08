@@ -9,6 +9,7 @@ Movement pruning (|W_t - W_0|), SynFlow synaptic-flow pruning (|W| * |dR/dW|),
 Optimal Brain Damage (OBD) second-order saliency ((1/2)*H_ii*w^2),
 Optimal Brain Surgeon (OBS) inverse-Hessian saliency (w^2/(2*H^{-1}_ii)),
 Zhu & Gupta gradual / polynomial magnitude pruning,
+N:M semi-structured sparsity (e.g. 2:4 for sparse tensor cores),
 structured channel/filter pruning,
 first-order Taylor (soft-filter) channel pruning, per-layer and
 per-channel survival reporting, sparse-mask helpers, and a tiny CLI.
@@ -328,6 +329,31 @@ python -m prune_kit.cli wanda \
   --density 0.5 --scope layer
 ```
 
+
+## N:M semi-structured sparsity (2:4)
+
+Sparse tensor cores (NVIDIA Ampere and later) accelerate layers whose
+weights keep at most **N non-zeros in every group of M consecutive
+weights** along the input dimension, most commonly 2:4. `nm_prune_*`
+groups dense `(out, in)` weights by consecutive input columns and conv
+`(out, in, kh, kw)` weights by consecutive input channels at each
+`(out, kh, kw)` position, then keeps the N highest scores per group.
+Scores default to `|w|`; pass any per-weight importance via `scores`
+(e.g. Wanda scores for "Wanda 2:4"). `skip` leaves layers dense and
+`is_nm_sparse` checks compliance.
+
+```python
+from prune_kit import dense_layer, is_nm_sparse, nm_prune_layer, nm_prune_summary
+
+nm_prune_layer([0.1, -0.9, 0.3, 0.2, 5.0, 0.0, -4.0, 1.0], n=2, m=4)
+# [0.0, -0.9, 0.3, 0.0, 5.0, 0.0, -4.0, 0.0]
+
+specs = [dense_layer("fc1", in_features=8, out_features=2)]
+summary = nm_prune_summary(specs, {"fc1": [float(i) for i in range(16)]}, n=2, m=4)
+print(summary["overall_survival"])  # 0.5
+```
+
+CLI: `prune-kit nm --n 2 --m 4 --specs fc1=dense:8x2 --weights ... [--skip fc_out] [--json]`.
 
 ## LAMP (layer-adaptive magnitude pruning)
 

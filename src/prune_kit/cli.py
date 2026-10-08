@@ -16,6 +16,7 @@ from .snip import snip_prune_summary
 from .grasp import grasp_prune_summary
 from .wanda import wanda_prune_summary
 from .lamp import lamp_prune_summary
+from .nm_sparsity import nm_prune_summary
 from .movement import movement_prune_summary
 from .synflow import synflow_prune_summary
 from .obd import obd_prune_summary
@@ -422,6 +423,34 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
         help="Print the summary as JSON",
     )
+
+    nm = sub.add_parser(
+        "nm",
+        help="Prune to N:M semi-structured sparsity (e.g. 2:4 for sparse tensor cores)",
+    )
+    nm.add_argument("--n", type=int, default=2, help="Weights kept per group (default: 2)")
+    nm.add_argument("--m", type=int, default=4, help="Group size along the input axis (default: 4)")
+    nm.add_argument(
+        "--specs", required=True,
+        help="Comma-separated layer specs, e.g. 'fc1=dense:8x4,conv1=conv:4x4x3x3'",
+    )
+    nm.add_argument(
+        "--weights", required=True,
+        help="Comma-separated floats (the flat weight buffer for the model)",
+    )
+    nm.add_argument(
+        "--skip", default="",
+        help="Comma-separated layer names to leave dense (e.g. first/last layer)",
+    )
+    nm.add_argument(
+        "--allow-partial", action="store_true",
+        help="Allow an input dimension not divisible by m (short trailing group)",
+    )
+    nm.add_argument(
+        "--output", "-o", default=None,
+        help="Write the Markdown report to a file instead of stdout",
+    )
+    nm.add_argument("--json", action="store_true", help="Print the summary as JSON")
 
     movement = sub.add_parser(
         "movement",
@@ -1091,6 +1120,32 @@ def _render_lamp_markdown(summary: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _render_nm_markdown(summary: dict) -> str:
+    lines: list[str] = [
+        f"# N:M semi-structured pruning ({summary['pattern']})",
+        "",
+        f"- Pattern: {summary['pattern']} (target density {summary['target_density']:.4f})",
+        f"- Total weights: {summary['total']}",
+        f"- Total kept: {summary['total_kept']}",
+        f"- Overall survival: {summary['overall_survival']:.4f}",
+    ]
+    if summary["skip"]:
+        lines.append(f"- Dense (skipped) layers: {', '.join(summary['skip'])}")
+    lines.extend([
+        "",
+        "| Layer | Kind | Total | Kept | Survival | Groups | N:M compliant |",
+        "| --- | --- | ---: | ---: | ---: | ---: | --- |",
+    ])
+    for row in summary["layers"]:
+        compliant = "dense" if row["skipped"] else ("yes" if row["nm_compliant"] else "no")
+        lines.append(
+            f"| {row['layer']} | {row['kind']} | {row['total_weights']} | "
+            f"{row['kept_weights']} | {row['survival_fraction']:.4f} | "
+            f"{row['groups']} | {compliant} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _render_synflow_markdown(summary: dict) -> str:
     lines: list[str] = [
         "# SynFlow pruning (|W| * |dR/dW|)",
@@ -1640,6 +1695,34 @@ def cmd_lamp(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_nm(args: argparse.Namespace) -> int:
+    try:
+        specs = _parse_specs(args.specs)
+        flat = _parse_weights(args.weights)
+        model = _weights_per_layer(specs, flat)
+        skip = [name.strip() for name in args.skip.split(",") if name.strip()]
+        summary = nm_prune_summary(
+            specs, model, n=args.n, m=args.m, skip=skip,
+            allow_partial=args.allow_partial,
+        )
+    except (KeyError, ValueError) as exc:
+        print(f"nm: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        printable = dict(summary)
+        printable.pop("pruned_weights", None)
+        printable.pop("masks", None)
+        print(json.dumps(printable, indent=2))
+        return 0
+    text = _render_nm_markdown(summary)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+        print(f"Wrote {args.output}")
+        return 0
+    print(text)
+    return 0
+
+
 def cmd_synflow(args: argparse.Namespace) -> int:
     try:
         specs = _parse_specs(args.specs)
@@ -2047,6 +2130,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_wanda(args)
     if args.command == "lamp":
         return cmd_lamp(args)
+    if args.command == "nm":
+        return cmd_nm(args)
     if args.command == "movement":
         return cmd_movement(args)
     if args.command == "synflow":
