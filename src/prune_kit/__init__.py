@@ -92,6 +92,14 @@ from .taylor import (
     taylor_prune_model,
     taylor_prune_summary,
 )
+from .nm_sparsity import (
+    is_nm_sparse,
+    nm_groups,
+    nm_mask,
+    nm_prune_layer,
+    nm_prune_model,
+    nm_prune_summary,
+)
 from .train import (
     EpochResult,
     TrainingConfig,
@@ -175,6 +183,12 @@ __all__ = [
     "obs_prune_layer",
     "obs_prune_model",
     "obs_prune_summary",
+    "nm_groups",
+    "nm_mask",
+    "nm_prune_layer",
+    "is_nm_sparse",
+    "nm_prune_model",
+    "nm_prune_summary",
     "TrainingConfig",
     "EpochResult",
     "TrainingHistory",
