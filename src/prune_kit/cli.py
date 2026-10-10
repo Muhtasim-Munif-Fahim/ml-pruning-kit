@@ -17,6 +17,7 @@ from .grasp import grasp_prune_summary
 from .wanda import wanda_prune_summary
 from .lamp import lamp_prune_summary
 from .nm_sparsity import nm_prune_summary
+from .erk import erk_prune_summary
 from .movement import movement_prune_summary
 from .synflow import synflow_prune_summary
 from .obd import obd_prune_summary
@@ -420,6 +421,43 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Write the Markdown report to a file instead of stdout",
     )
     lamp.add_argument(
+        "--json", action="store_true",
+        help="Print the summary as JSON",
+    )
+
+    erk = sub.add_parser(
+        "erk",
+        help="Allocate ER / ERK / uniform layer densities and magnitude-prune",
+    )
+    erk.add_argument(
+        "--density", type=float, default=0.5,
+        help="Global fraction of connections to keep (default: 0.5)",
+    )
+    erk.add_argument(
+        "--method", choices=("erk", "er", "uniform"), default="erk",
+        help="Layer-wise density rule (default: erk)",
+    )
+    erk.add_argument(
+        "--power-scale", type=float, default=1.0,
+        help="Exponent on the ER/ERK ratios; 0 recovers uniform (default: 1.0)",
+    )
+    erk.add_argument(
+        "--dense", default=None,
+        help="Comma-separated layer names that must stay dense",
+    )
+    erk.add_argument(
+        "--specs", required=True,
+        help="Comma-separated layer specs, e.g. 'conv1=conv:16x3x3x3,fc=dense:64x10'",
+    )
+    erk.add_argument(
+        "--weights", required=True,
+        help="Comma-separated floats (the flat weight buffer for the model)",
+    )
+    erk.add_argument(
+        "--output", "-o", default=None,
+        help="Write the Markdown report to a file instead of stdout",
+    )
+    erk.add_argument(
         "--json", action="store_true",
         help="Print the summary as JSON",
     )
@@ -1120,6 +1158,34 @@ def _render_lamp_markdown(summary: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _render_erk_markdown(summary: dict) -> str:
+    lines: list[str] = [
+        "# Layer-wise sparsity allocation (ER / ERK)",
+        "",
+        f"- Method: {summary['method']}",
+        f"- Global density: {summary['density']:.4f}",
+        f"- Power scale: {summary['erk_power_scale']:.4f}",
+        f"- Total weights: {summary['total']}",
+        f"- Total kept: {summary['total_kept']}",
+        f"- Overall survival: {summary['overall_survival']:.4f}",
+    ]
+    if summary["dense_layers"]:
+        lines.append(f"- Forced dense: {', '.join(summary['dense_layers'])}")
+    lines.extend([
+        "",
+        "| Layer | Kind | Shape | Total | Target density | Kept | Survival |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: |",
+    ])
+    for row in summary["layers"]:
+        shape = "x".join(str(dim) for dim in row["shape"])
+        lines.append(
+            f"| {row['layer']} | {row['kind']} | {shape} | {row['total_weights']} | "
+            f"{row['target_density']:.4f} | {row['kept_weights']} | "
+            f"{row['survival_fraction']:.4f} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _render_nm_markdown(summary: dict) -> str:
     lines: list[str] = [
         f"# N:M semi-structured pruning ({summary['pattern']})",
@@ -1695,6 +1761,42 @@ def cmd_lamp(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_erk(args: argparse.Namespace) -> int:
+    try:
+        specs = _parse_specs(args.specs)
+        flat = _parse_weights(args.weights)
+        model = _weights_per_layer(specs, flat)
+        dense = [name.strip() for name in (args.dense or "").split(",") if name.strip()]
+    except ValueError as exc:
+        print(f"erk: {exc}", file=sys.stderr)
+        return 2
+    try:
+        summary = erk_prune_summary(
+            specs,
+            model,
+            density=args.density,
+            method=args.method,
+            erk_power_scale=args.power_scale,
+            dense_layers=dense,
+        )
+    except (KeyError, ValueError) as exc:
+        print(f"erk: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        printable = dict(summary)
+        printable.pop("pruned_weights", None)
+        printable.pop("masks", None)
+        print(json.dumps(printable, indent=2))
+        return 0
+    text = _render_erk_markdown(summary)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+        print(f"Wrote {args.output}")
+        return 0
+    print(text)
+    return 0
+
+
 def cmd_nm(args: argparse.Namespace) -> int:
     try:
         specs = _parse_specs(args.specs)
@@ -2130,6 +2232,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_wanda(args)
     if args.command == "lamp":
         return cmd_lamp(args)
+    if args.command == "erk":
+        return cmd_erk(args)
     if args.command == "nm":
         return cmd_nm(args)
     if args.command == "movement":

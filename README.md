@@ -355,6 +355,35 @@ print(summary["overall_survival"])  # 0.5
 
 CLI: `prune-kit nm --n 2 --m 4 --specs fc1=dense:8x2 --weights ... [--skip fc_out] [--json]`.
 
+## ER / ERK layer-wise sparsity (RigL / SET)
+
+Sparse-training methods such as SET and RigL (Evci et al., 2020) give
+each layer its own density instead of a uniform one. **Erdős–Rényi**
+scales a layer's density with `(n_out + n_in) / (n_out * n_in)`;
+**Erdős–Rényi-Kernel** uses `sum(shape) / prod(shape)`, which also counts
+conv kernel dims. One scale factor makes the parameter-weighted mean
+density equal the requested global `density`. Any layer that would go
+above 1 becomes fully dense and the leftover budget is spread over the
+rest (the RigL procedure). `erk_power_scale=0` gives a uniform
+allocation, `dense_layers` keeps named layers dense, and
+`method="uniform"` is available as a baseline. `erk_prune_model` then
+magnitude-prunes each layer to its allocated density.
+
+```python
+from prune_kit import conv_layer, dense_layer, erk_densities, erk_prune_summary
+
+specs = [
+    conv_layer("conv1", 16, 3, 3, 3),
+    conv_layer("conv2", 32, 16, 3, 3),
+    dense_layer("fc1", in_features=512, out_features=128),
+    dense_layer("fc2", in_features=128, out_features=10),
+]
+print(erk_densities(specs, density=0.1))
+# {'conv1': 0.4852, 'conv2': 0.0983, 'fc1': 0.0819, 'fc2': 0.904}  (rounded)
+```
+
+CLI: `prune-kit erk --specs conv1=conv:16x3x3x3,fc=dense:64x10 --weights ... --density 0.1 [--method er|uniform] [--dense conv1] [--json]`.
+
 ## LAMP (layer-adaptive magnitude pruning)
 
 Uniform per-layer magnitude pruning forces every layer to the same

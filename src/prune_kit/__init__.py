@@ -100,6 +100,11 @@ from .nm_sparsity import (
     nm_prune_model,
     nm_prune_summary,
 )
+from .erk import (
+    erk_densities,
+    erk_prune_model,
+    erk_prune_summary,
+)
 from .train import (
     EpochResult,
     TrainingConfig,
@@ -189,6 +194,9 @@ __all__ = [
     "is_nm_sparse",
     "nm_prune_model",
     "nm_prune_summary",
+    "erk_densities",
+    "erk_prune_model",
+    "erk_prune_summary",
     "TrainingConfig",
     "EpochResult",
     "TrainingHistory",
