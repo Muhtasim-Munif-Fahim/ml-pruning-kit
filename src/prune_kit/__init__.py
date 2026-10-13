@@ -20,6 +20,14 @@ from .prune import (
     total_pruned,
     weight_density,
 )
+from .rigl import (
+    cosine_drop_fraction,
+    random_sparse_masks,
+    rigl_schedule,
+    rigl_update_layer,
+    rigl_update_model,
+    set_update_layer,
+)
 from .snip import (
     snip_prune_layer,
     snip_prune_model,
@@ -209,4 +217,10 @@ __all__ = [
     "polynomial_sparsity",
     "polynomial_sparsity_schedule",
     "gradual_magnitude_prune_model",
+    "cosine_drop_fraction",
+    "random_sparse_masks",
+    "rigl_schedule",
+    "rigl_update_layer",
+    "rigl_update_model",
+    "set_update_layer",
 ]
