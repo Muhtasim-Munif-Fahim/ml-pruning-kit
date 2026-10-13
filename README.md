@@ -11,6 +11,7 @@ Optimal Brain Surgeon (OBS) inverse-Hessian saliency (w^2/(2*H^{-1}_ii)),
 Zhu & Gupta gradual / polynomial magnitude pruning,
 N:M semi-structured sparsity (e.g. 2:4 for sparse tensor cores),
 structured channel/filter pruning,
+RigL / SET dynamic sparse training (prune-and-regrow),
 first-order Taylor (soft-filter) channel pruning, per-layer and
 per-channel survival reporting, sparse-mask helpers, and a tiny CLI.
 The codebase is intentionally framework-agnostic: every routine works
@@ -383,6 +384,39 @@ print(erk_densities(specs, density=0.1))
 ```
 
 CLI: `prune-kit erk --specs conv1=conv:16x3x3x3,fc=dense:64x10 --weights ... --density 0.1 [--method er|uniform] [--dense conv1] [--json]`.
+
+## Dynamic sparse training: RigL and SET
+
+Dynamic sparse training keeps a fixed connection budget from the start and
+periodically rewires it. Each update drops the `drop_fraction` smallest-|w|
+active weights and regrows the same number of dormant connections:
+RigL (Evci et al., 2020) regrows the largest dense-gradient `|dL/dW|`,
+SET (Mocanu et al., 2018) regrows uniformly at random. Density stays exactly
+constant; regrown weights start at `regrow_init` (0.0). Masks are explicit
+0/1 lists because a freshly regrown weight can be zero.
+
+```python
+from prune_kit import (
+    dense_layer, random_sparse_masks, rigl_schedule, rigl_update_model,
+)
+
+specs = [dense_layer("fc1", 64, 32), dense_layer("fc2", 32, 10)]
+masks = random_sparse_masks(specs, density=0.2, distribution="erk", seed=0)
+# ... train a few steps with weights * masks, then at each scheduled step:
+for step, frac in rigl_schedule(total_steps=10_000, update_every=100):
+    out = rigl_update_model(specs, weights, masks, dense_grads, drop_fraction=frac)
+    weights, masks = out["weights"], out["masks"]
+```
+
+`cosine_drop_fraction(t, end_step=T_end, initial_fraction=0.3)` is the
+paper's `alpha/2 * (1 + cos(pi t / T_end))` decay. `rigl_update_layer` and
+`set_update_layer` work on a single flat layer and report the dropped and
+grown indices. The CLI runs one update:
+
+```bash
+prune-kit rigl --specs fc=dense:2x3 --weights 0.9,0,-0.1,0.5,0,0 \
+    --gradients 0,2,0,0,0.1,0 --drop-fraction 0.5
+```
 
 ## LAMP (layer-adaptive magnitude pruning)
 

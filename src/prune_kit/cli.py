@@ -19,6 +19,7 @@ from .lamp import lamp_prune_summary
 from .nm_sparsity import nm_prune_summary
 from .erk import erk_prune_summary
 from .movement import movement_prune_summary
+from .rigl import rigl_update_model
 from .synflow import synflow_prune_summary
 from .obd import obd_prune_summary
 from .obs import obs_prune_summary
@@ -458,6 +459,44 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Write the Markdown report to a file instead of stdout",
     )
     erk.add_argument(
+        "--json", action="store_true",
+        help="Print the summary as JSON",
+    )
+
+    rigl = sub.add_parser(
+        "rigl",
+        help="One RigL / SET drop-and-regrow update (dynamic sparse training)",
+    )
+    rigl.add_argument(
+        "--drop-fraction", type=float, default=0.3,
+        help="Fraction of active connections rewired per layer (default: 0.3)",
+    )
+    rigl.add_argument(
+        "--regrow", choices=("gradient", "random"), default="gradient",
+        help="gradient: RigL (largest |dL/dW|); random: SET. Default: gradient",
+    )
+    rigl.add_argument(
+        "--specs", required=True,
+        help="Comma-separated layer specs, e.g. 'fc1=dense:8x4,conv1=conv:4x1x3x3'",
+    )
+    rigl.add_argument(
+        "--weights", required=True,
+        help="Comma-separated floats (current sparse weights)",
+    )
+    rigl.add_argument(
+        "--mask", default=None,
+        help="Comma-separated 0/1 mask aligned with --weights (default: weights != 0)",
+    )
+    rigl.add_argument(
+        "--gradients", default=None,
+        help="Comma-separated dense gradients aligned with --weights (required for --regrow gradient)",
+    )
+    rigl.add_argument("--seed", type=int, default=None, help="RNG seed for --regrow random")
+    rigl.add_argument(
+        "--output", "-o", default=None,
+        help="Write the Markdown report to a file instead of stdout",
+    )
+    rigl.add_argument(
         "--json", action="store_true",
         help="Print the summary as JSON",
     )
@@ -1186,6 +1225,26 @@ def _render_erk_markdown(summary: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _render_rigl_markdown(summary: dict, regrow: str, drop_fraction: float) -> str:
+    label = "RigL (gradient regrowth)" if regrow == "gradient" else "SET (random regrowth)"
+    lines: list[str] = [
+        f"# Dynamic sparse update: {label}",
+        "",
+        f"- Drop fraction: {drop_fraction:.4f}",
+        f"- Model density: {summary['density']:.4f}",
+        f"- Connections rewired: {summary['n_rewired']}",
+        "",
+        "| Layer | Size | Active | Density | Dropped | Grown | Mask overlap |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for row in summary["layers"]:
+        lines.append(
+            f"| {row['name']} | {row['size']} | {row['active']} | {row['density']:.4f} | "
+            f"{row['dropped']} | {row['grown']} | {row['mask_overlap']:.4f} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _render_nm_markdown(summary: dict) -> str:
     lines: list[str] = [
         f"# N:M semi-structured pruning ({summary['pattern']})",
@@ -1797,6 +1856,45 @@ def cmd_erk(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rigl(args: argparse.Namespace) -> int:
+    try:
+        specs = _parse_specs(args.specs)
+        flat = _parse_weights(args.weights)
+        model = _weights_per_layer(specs, flat)
+        if args.mask:
+            flat_mask = [int(float(v)) for v in args.mask.split(",") if v.strip()]
+            if len(flat_mask) != len(flat):
+                raise ValueError(f"mask has {len(flat_mask)} values, weights has {len(flat)}")
+        else:
+            flat_mask = [1 if w != 0.0 else 0 for w in flat]
+        masks = _weights_per_layer(specs, flat_mask)
+        grads = None
+        if args.gradients:
+            flat_g = _parse_weights(args.gradients)
+            if len(flat_g) != len(flat):
+                raise ValueError(f"gradients has {len(flat_g)} values, weights has {len(flat)}")
+            grads = _weights_per_layer(specs, flat_g)
+        elif args.regrow == "gradient":
+            raise ValueError("--gradients is required for --regrow gradient")
+        summary = rigl_update_model(
+            specs, model, masks, grads,
+            drop_fraction=args.drop_fraction, regrow=args.regrow, seed=args.seed,
+        )
+    except (KeyError, ValueError) as exc:
+        print(f"rigl: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(summary, indent=2))
+        return 0
+    text = _render_rigl_markdown(summary, args.regrow, args.drop_fraction)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+        print(f"Wrote {args.output}")
+        return 0
+    print(text)
+    return 0
+
+
 def cmd_nm(args: argparse.Namespace) -> int:
     try:
         specs = _parse_specs(args.specs)
@@ -2236,6 +2334,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_erk(args)
     if args.command == "nm":
         return cmd_nm(args)
+    if args.command == "rigl":
+        return cmd_rigl(args)
     if args.command == "movement":
         return cmd_movement(args)
     if args.command == "synflow":
