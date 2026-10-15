@@ -40,6 +40,12 @@ from .grasp import (
     grasp_prune_summary,
     grasp_scores,
 )
+from .fpgm import (
+    fpgm_distances,
+    fpgm_prune_layer,
+    fpgm_prune_model,
+    geometric_median,
+)
 from .structured import (
     channel_groups,
     channel_norms,
@@ -151,6 +157,10 @@ __all__ = [
     "vector_norm",
     "structured_keep_indices",
     "structured_prune_layer",
+    "fpgm_distances",
+    "fpgm_prune_layer",
+    "fpgm_prune_model",
+    "geometric_median",
     "structured_prune_model",
     "per_layer_survival",
     "model_survival_summary",
