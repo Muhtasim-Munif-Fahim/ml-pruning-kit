@@ -40,6 +40,14 @@ from .grasp import (
     grasp_prune_summary,
     grasp_scores,
 )
+from .slimming import (
+    slimming_channel_masks,
+    slimming_l1_penalty,
+    slimming_prune_model,
+    slimming_prune_summary,
+    slimming_subgradient,
+    slimming_threshold,
+)
 from .fpgm import (
     fpgm_distances,
     fpgm_prune_layer,
@@ -157,6 +165,12 @@ __all__ = [
     "vector_norm",
     "structured_keep_indices",
     "structured_prune_layer",
+    "slimming_channel_masks",
+    "slimming_l1_penalty",
+    "slimming_prune_model",
+    "slimming_prune_summary",
+    "slimming_subgradient",
+    "slimming_threshold",
     "fpgm_distances",
     "fpgm_prune_layer",
     "fpgm_prune_model",

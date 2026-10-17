@@ -631,6 +631,33 @@ python -m prune_kit.cli obs \
   --density 0.5 --scope global
 ```
 
+## Network Slimming (batch-norm scale channel pruning)
+
+Liu et al. (ICCV 2017) train with an extra L1 penalty on every batch-norm
+scale `gamma`, which pushes unimportant channels' scales towards zero, and
+then remove channels with **one global threshold** over all `|gamma|` values,
+so each layer ends up with its own width. `slimming_l1_penalty` /
+`slimming_subgradient` give the sparsity-training term (`lam * sign(gamma)` is
+added to each scale's gradient); `slimming_channel_masks` and
+`slimming_threshold` pick the globally smallest `prune_ratio` share of
+channels (each layer keeps at least `min_channels`). `slimming_prune_model`
+zeroes the pruned output filters and, with `prune_next_inputs=True`, the
+matching input channels of the following layer.
+
+```python
+from prune_kit import conv_layer, slimming_channel_masks, slimming_prune_model
+
+specs = [conv_layer("conv1", 4, 1, 1, 2), conv_layer("conv2", 2, 4, 1, 1)]
+model = {"conv1": [float(i + 1) for i in range(8)], "conv2": [1.0] * 8}
+scales = {"conv1": [0.9, 0.01, 0.8, 0.02], "conv2": [0.5, 0.001]}
+
+slimming_channel_masks(scales, prune_ratio=0.5)
+# {'conv1': [1, 0, 1, 0], 'conv2': [1, 0]}
+pruned = slimming_prune_model(specs, model, scales, prune_ratio=0.5,
+                              prune_next_inputs=True)
+# conv2 also loses input channels 1 and 3 that fed from pruned conv1 filters
+```
+
 ## Global unstructured magnitude pruning
 
 Per-layer magnitude pruning keeps the same fraction of weights inside
@@ -690,6 +717,7 @@ prune-kit imp --help
 prune-kit structured --help
 prune-kit taylor --help
 prune-kit snip --help
+prune-kit slim --help
 prune-kit grasp --help
 prune-kit wanda --help
 prune-kit lamp --help
@@ -711,7 +739,7 @@ prints the same kind of survival table. `--grads` is a flat buffer
 aligned with `--weights`. The `snip` command scores every dense and
 conv connection by `|grad * weight|` and prints per-layer keep counts.
 `--scope global` (default) ranks the whole model; `--scope layer`
-keeps `--density` inside each layer. The `grasp` command scores connections by `-w*(Hg)`. The `wanda` command scores by `|W|*||X||_2` using `--activation-norms` (column norms for a single layer, or a per-weight buffer); optional `--structure filter|channel` aggregates scores into structured groups. The `lamp` command scores by classic LAMP (`W^2 / sum_{j>=i} W^2`) or `|w|/||W||_F` (`--mode lamp|frobenius`); `--scope global` (default) ranks every score together for layer-adaptive sparsity. The `movement` command scores by `|W_t - W_0|` using `--initial-weights` aligned with `--weights`; lowest movement is pruned first. The `synflow` command scores by `|W| * |dR/dW|` (optional `--grads`, else data-free unit-input / exponential proxy). The `obd` command scores by `(1/2)*H_ii*w^2` using `--hess-diag` or squared-gradient proxy via `--grads`. The `global` command prunes lowest-|w| weights to `--sparsity`
+keeps `--density` inside each layer. The `grasp` command scores connections by `-w*(Hg)`. The `wanda` command scores by `|W|*||X||_2` using `--activation-norms` (column norms for a single layer, or a per-weight buffer); optional `--structure filter|channel` aggregates scores into structured groups. The `lamp` command scores by classic LAMP (`W^2 / sum_{j>=i} W^2`) or `|w|/||W||_F` (`--mode lamp|frobenius`); `--scope global` (default) ranks every score together for layer-adaptive sparsity. The `movement` command scores by `|W_t - W_0|` using `--initial-weights` aligned with `--weights`; lowest movement is pruned first. The `synflow` command scores by `|W| * |dR/dW|` (optional `--grads`, else data-free unit-input / exponential proxy). The `obd` command scores by `(1/2)*H_ii*w^2` using `--hess-diag` or squared-gradient proxy via `--grads`. The `slim` command applies Network Slimming from `--bn-scales 'conv1=g1:g2:...'` with `--prune-ratio`, `--min-channels`, and `--prune-next-inputs`, printing kept channels per layer. The `global` command prunes lowest-|w| weights to `--sparsity`
 (optionally over `--rounds` or an explicit `--schedule`) and prints
 the density after each round plus a per-layer kept-count table.
 `--rewind` resets survivors to `--initial-weights`.

@@ -12,6 +12,7 @@ from .gradual import gradual_magnitude_prune_model
 from .layers import LayerSpec, conv_layer, dense_layer
 from .masks import dense_mask, mask_density, sparse_mask_to_dense
 from .prune import iterative_magnitude_prune_model
+from .slimming import slimming_prune_summary
 from .snip import snip_prune_summary
 from .grasp import grasp_prune_summary
 from .wanda import wanda_prune_summary
@@ -265,6 +266,46 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Write the Markdown report to a file instead of stdout",
     )
     snip.add_argument(
+        "--json", action="store_true",
+        help="Print the summary as JSON",
+    )
+
+    slim = sub.add_parser(
+        "slim",
+        help="Network Slimming: global channel prune by batch-norm scales |gamma|",
+    )
+    slim.add_argument(
+        "--prune-ratio", type=float, default=0.5,
+        help="Fraction of all BN channels to remove with one global threshold (default: 0.5)",
+    )
+    slim.add_argument(
+        "--min-channels", type=int, default=1,
+        help="Channels every layer keeps regardless of the threshold (default: 1)",
+    )
+    slim.add_argument(
+        "--prune-next-inputs", action="store_true",
+        help="Also zero the matching input channels of the following layer",
+    )
+    slim.add_argument(
+        "--specs", required=True,
+        help="Comma-separated layer specs, e.g. 'conv1=conv:4x1x3x3,conv2=conv:2x4x1x1'",
+    )
+    slim.add_argument(
+        "--weights", required=True,
+        help="Comma-separated floats (the flat weight buffer for the model)",
+    )
+    slim.add_argument(
+        "--bn-scales", required=True,
+        help=(
+            "Comma-separated name=g1:g2:... batch-norm scales, one per output "
+            "channel, e.g. 'conv1=0.9:0.01:0.5:0.02,conv2=0.3:0.004'"
+        ),
+    )
+    slim.add_argument(
+        "--output", "-o", default=None,
+        help="Write the Markdown report to a file instead of stdout",
+    )
+    slim.add_argument(
         "--json", action="store_true",
         help="Print the summary as JSON",
     )
@@ -1693,6 +1734,88 @@ def cmd_snip(args: argparse.Namespace) -> int:
 
 
 
+def _parse_bn_scales(raw: str) -> dict:
+    scales: dict = {}
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(f"bn scale entry {item!r} must look like name=g1:g2")
+        name, values = item.split("=", 1)
+        name = name.strip()
+        if name in scales:
+            raise ValueError(f"duplicate bn scales for layer {name!r}")
+        try:
+            scales[name] = [float(v) for v in values.split(":") if v.strip()]
+        except ValueError as exc:
+            raise ValueError(f"bad bn scale value in {item!r}") from exc
+    if not scales:
+        raise ValueError("--bn-scales must list at least one layer")
+    return scales
+
+
+def _render_slim_markdown(summary: dict) -> str:
+    threshold = summary["threshold"]
+    lines: list[str] = [
+        "# Network Slimming (BN-scale channel pruning)",
+        "",
+        f"- Prune ratio: {summary['prune_ratio']:.4f}",
+        f"- Global |gamma| threshold: {'none' if threshold is None else f'{threshold:.6g}'}",
+        f"- Min channels per layer: {summary['min_channels']}",
+        f"- Channels kept: {summary['kept_channels']} / {summary['total_channels']} "
+        f"({summary['channel_survival']:.4f})",
+        "",
+        "| Layer | Kind | Channels kept | Inputs pruned | Non-zero weights | Survival |",
+        "| --- | --- | ---: | :---: | ---: | ---: |",
+    ]
+    for row in summary["layers"]:
+        channels = (
+            "-" if row["channels"] is None else f"{row['kept_channels']}/{row['channels']}"
+        )
+        lines.append(
+            f"| {row['layer']} | {row['kind']} | {channels} | "
+            f"{'yes' if row['inputs_pruned'] else 'no'} | "
+            f"{row['nonzero_weights']}/{row['total_weights']} | {row['survival_fraction']:.4f} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def cmd_slim(args: argparse.Namespace) -> int:
+    try:
+        specs = _parse_specs(args.specs)
+        flat = _parse_weights(args.weights)
+        scales = _parse_bn_scales(args.bn_scales)
+    except ValueError as exc:
+        print(f"slim: {exc}", file=sys.stderr)
+        return 2
+    try:
+        model = _weights_per_layer(specs, flat)
+        summary = slimming_prune_summary(
+            specs,
+            model,
+            scales,
+            prune_ratio=args.prune_ratio,
+            min_channels=args.min_channels,
+            prune_next_inputs=args.prune_next_inputs,
+        )
+    except (KeyError, ValueError) as exc:
+        print(f"slim: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        printable = dict(summary)
+        printable.pop("pruned_weights", None)
+        print(json.dumps(printable, indent=2))
+        return 0
+    text = _render_slim_markdown(summary)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+        print(f"Wrote {args.output}")
+        return 0
+    print(text)
+    return 0
+
+
 def cmd_grasp(args: argparse.Namespace) -> int:
     try:
         specs = _parse_specs(args.specs)
@@ -2324,6 +2447,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_taylor(args)
     if args.command == "snip":
         return cmd_snip(args)
+    if args.command == "slim":
+        return cmd_slim(args)
     if args.command == "grasp":
         return cmd_grasp(args)
     if args.command == "wanda":
