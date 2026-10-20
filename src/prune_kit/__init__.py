@@ -40,6 +40,16 @@ from .grasp import (
     grasp_prune_summary,
     grasp_scores,
 )
+from .thinet import (
+    ThiNetResult,
+    channel_contribution_gram,
+    least_squares_reconstruct,
+    reconstruction_error,
+    thinet_prune_layer,
+    thinet_prune_model,
+    thinet_prune_summary,
+    thinet_select_channels,
+)
 from .slimming import (
     slimming_channel_masks,
     slimming_l1_penalty,
@@ -247,4 +257,12 @@ __all__ = [
     "rigl_update_layer",
     "rigl_update_model",
     "set_update_layer",
+    "ThiNetResult",
+    "channel_contribution_gram",
+    "least_squares_reconstruct",
+    "reconstruction_error",
+    "thinet_prune_layer",
+    "thinet_prune_model",
+    "thinet_prune_summary",
+    "thinet_select_channels",
 ]

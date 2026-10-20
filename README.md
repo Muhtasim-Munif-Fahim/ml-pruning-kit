@@ -658,6 +658,40 @@ pruned = slimming_prune_model(specs, model, scales, prune_ratio=0.5,
 # conv2 also loses input channels 1 and 3 that fed from pruned conv1 filters
 ```
 
+## ThiNet (output-aware channel pruning + least-squares reconstruction)
+
+Norm-based channel pruning ranks input channels by the size of their
+*weights*. ThiNet (Luo et al., ICCV 2017) ranks them by what they actually
+contribute to the layer output on calibration data. For `y = W x`, channel `c`
+contributes `z_c = W[:, c] x[c]`. Removing a set `T` costs
+`E(T) = sum_n ||sum_{c in T} z_{n,c}||^2`, which is a quadratic form in the
+channel Gram matrix `G[c, d] = sum_n <z_{n,c}, z_{n,d}>`.
+
+- `thinet_select_channels` greedily removes the channel that increases `E`
+  the least, until only `density` of the channels remain.
+- `least_squares_reconstruct` then refits the kept weights so the pruned
+  layer reproduces the original outputs (`min ||W X - W'_S X_S||^2`, with a
+  small scale-free ridge), as in He et al. (ICCV 2017). This step is exact
+  when a removed channel is a linear combination of the kept ones.
+
+Inputs are rows of length `in * kh * kw`: raw features for dense layers, or
+im2col patches for conv layers.
+
+```python
+from prune_kit import dense_layer, thinet_prune_layer, thinet_prune_model
+
+res = thinet_prune_layer(weights, (out, n_in), calibration_rows, density=0.5)
+res.keep, res.relative_error_before, res.relative_error_after
+baseline = thinet_prune_layer(weights, (out, n_in), calibration_rows, 0.5,
+                              selection="l1", reconstruct=False)
+pruned = thinet_prune_model(specs, model, {"fc2": rows_fc2}, density=0.5)
+```
+
+`prune-kit thinet` runs a synthetic demo. One input channel is nearly
+silent but has the largest weights, and two channels are redundant mixes of
+the others. The demo compares the relative output error of L1 selection,
+ThiNet, and ThiNet + LS.
+
 ## Global unstructured magnitude pruning
 
 Per-layer magnitude pruning keeps the same fraction of weights inside
@@ -725,6 +759,7 @@ prune-kit movement --help
 prune-kit synflow --help
 prune-kit obd --help
 prune-kit global --help
+prune-kit thinet --density 0.5
 ```
 
 The `survival` command emits a Markdown table with per-layer survival,
