@@ -26,6 +26,7 @@ from .obd import obd_prune_summary
 from .obs import obs_prune_summary
 from .survival import model_channel_survival_summary, model_survival_summary
 from .taylor import taylor_prune_summary
+from .thinet import thinet_prune_summary
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -269,6 +270,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
         help="Print the summary as JSON",
     )
+
+    thinet = sub.add_parser(
+        "thinet",
+        help="ThiNet: greedy output-aware input-channel pruning + least-squares reconstruction",
+    )
+    thinet.add_argument("--in-channels", type=int, default=8, help="Input channels of the demo layer (default: 8)")
+    thinet.add_argument("--out-features", type=int, default=6, help="Output units of the demo layer (default: 6)")
+    thinet.add_argument("--samples", type=int, default=200, help="Calibration rows (default: 200)")
+    thinet.add_argument("--density", type=float, default=0.5, help="Fraction of input channels to keep (default: 0.5)")
+    thinet.add_argument(
+        "--redundant", type=int, default=2,
+        help="Demo input channels that are linear combinations of others (default: 2)",
+    )
+    thinet.add_argument("--ridge", type=float, default=1e-8, help="Relative ridge for the refit (default: 1e-8)")
+    thinet.add_argument("--seed", type=int, default=0, help="Random seed (default: 0)")
+    thinet.add_argument("--json", action="store_true", help="Print the summary as JSON")
 
     slim = sub.add_parser(
         "slim",
@@ -1781,6 +1798,58 @@ def _render_slim_markdown(summary: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _thinet_demo(args: argparse.Namespace):
+    import random
+
+    if args.in_channels < 2 or args.out_features < 1 or args.samples < 1:
+        raise ValueError("need --in-channels >= 2, --out-features >= 1, --samples >= 1")
+    if not 0 <= args.redundant < args.in_channels:
+        raise ValueError("--redundant must be in [0, in-channels)")
+    rng = random.Random(args.seed)
+    n_in = args.in_channels
+    weights = [rng.gauss(0.0, 1.0) for _ in range(args.out_features * n_in)]
+    base = n_in - args.redundant
+    mixes = [[rng.gauss(0.0, 1.0) for _ in range(base)] for _ in range(args.redundant)]
+    rows = []
+    for _ in range(args.samples):
+        x = [rng.gauss(0.0, 1.0) * (0.05 if c == 0 else 1.0) for c in range(base)]
+        x += [sum(m * v for m, v in zip(mix, x)) for mix in mixes]
+        rows.append(x)
+    # the near-silent channel 0 has the largest weights: L1 keeps it, ThiNet does not
+    for o in range(args.out_features):
+        weights[o * n_in] *= 10.0
+    spec = dense_layer("demo", n_in, args.out_features)
+    return [spec], {"demo": weights}, {"demo": rows}
+
+
+def cmd_thinet(args: argparse.Namespace) -> int:
+    try:
+        specs, model, inputs = _thinet_demo(args)
+        summary = thinet_prune_summary(specs, model, inputs, args.density, ridge=args.ridge)
+    except ValueError as exc:
+        print(f"thinet: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(summary, indent=2))
+        return 0
+    lines = [
+        "# ThiNet channel pruning (synthetic calibration demo)",
+        "",
+        f"- Density: {summary['density']:.4f}",
+        "",
+        "| Layer | Channels kept | L1 keep | ThiNet keep | Rel. error L1 | Rel. error ThiNet | Rel. error ThiNet+LS |",
+        "| --- | ---: | --- | --- | ---: | ---: | ---: |",
+    ]
+    for row in summary["layers"]:
+        lines.append(
+            f"| {row['layer']} | {row['kept_channels']}/{row['channels']} | {row['l1_keep']} | "
+            f"{row['keep']} | {row['relative_error_l1']:.4f} | {row['relative_error_thinet']:.4f} | "
+            f"{row['relative_error_thinet_ls']:.4g} |"
+        )
+    print("\n".join(lines))
+    return 0
+
+
 def cmd_slim(args: argparse.Namespace) -> int:
     try:
         specs = _parse_specs(args.specs)
@@ -2449,6 +2518,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_snip(args)
     if args.command == "slim":
         return cmd_slim(args)
+    if args.command == "thinet":
+        return cmd_thinet(args)
     if args.command == "grasp":
         return cmd_grasp(args)
     if args.command == "wanda":
