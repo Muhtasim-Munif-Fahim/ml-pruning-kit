@@ -692,6 +692,23 @@ silent but has the largest weights, and two channels are redundant mixes of
 the others. The demo compares the relative output error of L1 selection,
 ThiNet, and ThiNet + LS.
 
+## SparseGPT (one-shot pruning with second-order weight reconstruction)
+
+Magnitude, Wanda and OBS saliency only *choose* which weights to drop. SparseGPT (Frantar & Alistarh, ICML 2023) also *updates the surviving weights*, so the layer output on calibration data barely changes. For `y = W x`, every row solves `min ||(w − w') Xᵀ||²` subject to the sparsity pattern, and all rows share the Hessian `H = XᵀX` (dampened by `percdamp·mean(diag H)`). Columns are processed left to right. When a weight is pruned, the Optimal Brain Surgeon update `w_{j:} −= (w_j / U_jj) · U_{j, j:}` spreads its error onto the not-yet-processed columns, where `U` is the upper Cholesky factor of `H⁻¹`. Masks are chosen adaptively per block of `block_size` columns by `w² / U_jj²`, either unstructured or `n:m` (for example 2:4).
+
+```python
+from prune_kit import sparsegpt_compare, sparsegpt_prune_layer, sparsegpt_prune_model
+
+res = sparsegpt_prune_layer(weights, (out, n_in), calibration_rows, density=0.5)
+res.weights, res.mask, res.relative_error
+res24 = sparsegpt_prune_layer(weights, (out, n_in), calibration_rows, nm=(2, 4))
+sparsegpt_compare(weights, (out, n_in), calibration_rows, 0.5)
+# {'magnitude': {...}, 'wanda': {...}, 'sparsegpt_mask_only': {...}, 'sparsegpt': {...}}
+pruned = sparsegpt_prune_model(specs, model, {"fc2": rows_fc2}, density=0.5)
+```
+
+The implementation matches a NumPy port of the reference algorithm to about 1e-14, including multi-block runs. On the `prune-kit sparsegpt` demo (a 16×32 layer with correlated, unevenly scaled inputs), the relative output error at 50% density is 0.070 for magnitude, 0.035 for Wanda and 0.032 for SparseGPT. At 2:4 it is 0.138, 0.091 and 0.075.
+
 ## Global unstructured magnitude pruning
 
 Per-layer magnitude pruning keeps the same fraction of weights inside
