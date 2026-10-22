@@ -287,6 +287,19 @@ def _build_parser() -> argparse.ArgumentParser:
     thinet.add_argument("--seed", type=int, default=0, help="Random seed (default: 0)")
     thinet.add_argument("--json", action="store_true", help="Print the summary as JSON")
 
+    sgpt = sub.add_parser(
+        "sparsegpt",
+        help="SparseGPT: one-shot pruning with OBS weight reconstruction vs magnitude / Wanda",
+    )
+    sgpt.add_argument("--in-features", type=int, default=32, help="Input width of the demo layer (default: 32)")
+    sgpt.add_argument("--out-features", type=int, default=16, help="Output units of the demo layer (default: 16)")
+    sgpt.add_argument("--samples", type=int, default=256, help="Calibration rows (default: 256)")
+    sgpt.add_argument("--density", type=float, default=0.5, help="Fraction of weights to keep (default: 0.5)")
+    sgpt.add_argument("--nm", default=None, help="Semi-structured N:M pattern, e.g. 2:4 (overrides --density)")
+    sgpt.add_argument("--percdamp", type=float, default=0.01, help="Hessian dampening (default: 0.01)")
+    sgpt.add_argument("--seed", type=int, default=0, help="Random seed (default: 0)")
+    sgpt.add_argument("--json", action="store_true", help="Print the comparison as JSON")
+
     slim = sub.add_parser(
         "slim",
         help="Network Slimming: global channel prune by batch-norm scales |gamma|",
@@ -1850,6 +1863,58 @@ def cmd_thinet(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sparsegpt(args: argparse.Namespace) -> int:
+    import random
+
+    from .sparsegpt import sparsegpt_compare
+
+    try:
+        if args.in_features < 2 or args.out_features < 1 or args.samples < 1:
+            raise ValueError("--in-features >= 2, --out-features >= 1 and --samples >= 1 are required")
+        nm = None
+        if args.nm:
+            parts = args.nm.split(":")
+            if len(parts) != 2:
+                raise ValueError("--nm must look like N:M, e.g. 2:4")
+            nm = (int(parts[0]), int(parts[1]))
+        rng = random.Random(args.seed)
+        d = args.in_features
+        # Correlated calibration features with uneven scales (as real activations are).
+        mix = [[rng.gauss(0.0, 1.0) for _ in range(d)] for _ in range(d)]
+        scale = [rng.uniform(0.2, 3.0) for _ in range(d)]
+        rows = []
+        for _ in range(args.samples):
+            z = [rng.gauss(0.0, 1.0) for _ in range(d)]
+            rows.append([scale[j] * sum(z[k] * mix[k][j] for k in range(d)) for j in range(d)])
+        weights = [rng.gauss(0.0, 1.0) for _ in range(args.out_features * d)]
+        result = sparsegpt_compare(weights, (args.out_features, d), rows, args.density,
+                                   nm=nm, percdamp=args.percdamp)
+    except ValueError as exc:
+        print(f"sparsegpt: {exc}", file=sys.stderr)
+        return 2
+    summary = {
+        "pattern": args.nm or f"density={args.density:g}",
+        "shape": [args.out_features, d],
+        "samples": args.samples,
+        "relative_error": {k: v["relative_error"] for k, v in result.items()},
+    }
+    if args.json:
+        print(json.dumps(summary, indent=2))
+        return 0
+    lines = [
+        "# SparseGPT one-shot pruning (synthetic calibration demo)",
+        "",
+        f"- Layer: {args.out_features} x {d}, {args.samples} calibration rows, {summary['pattern']}",
+        "",
+        "| Method | Relative output error |",
+        "| --- | ---: |",
+    ]
+    for name, value in summary["relative_error"].items():
+        lines.append(f"| {name} | {value:.4f} |")
+    print("\n".join(lines))
+    return 0
+
+
 def cmd_slim(args: argparse.Namespace) -> int:
     try:
         specs = _parse_specs(args.specs)
@@ -2520,6 +2585,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_slim(args)
     if args.command == "thinet":
         return cmd_thinet(args)
+    if args.command == "sparsegpt":
+        return cmd_sparsegpt(args)
     if args.command == "grasp":
         return cmd_grasp(args)
     if args.command == "wanda":

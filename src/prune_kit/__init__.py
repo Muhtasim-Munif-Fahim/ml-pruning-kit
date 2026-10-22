@@ -40,6 +40,14 @@ from .grasp import (
     grasp_prune_summary,
     grasp_scores,
 )
+from .sparsegpt import (
+    SparseGPTResult,
+    layer_hessian,
+    output_reconstruction_error,
+    sparsegpt_compare,
+    sparsegpt_prune_layer,
+    sparsegpt_prune_model,
+)
 from .thinet import (
     ThiNetResult,
     channel_contribution_gram,
@@ -261,6 +269,12 @@ __all__ = [
     "channel_contribution_gram",
     "least_squares_reconstruct",
     "reconstruction_error",
+    "SparseGPTResult",
+    "layer_hessian",
+    "output_reconstruction_error",
+    "sparsegpt_compare",
+    "sparsegpt_prune_layer",
+    "sparsegpt_prune_model",
     "thinet_prune_layer",
     "thinet_prune_model",
     "thinet_prune_summary",
