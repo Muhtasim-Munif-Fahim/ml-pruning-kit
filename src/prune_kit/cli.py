@@ -13,6 +13,7 @@ from .layers import LayerSpec, conv_layer, dense_layer
 from .masks import dense_mask, mask_density, sparse_mask_to_dense
 from .prune import iterative_magnitude_prune_model
 from .slimming import slimming_prune_summary
+from .hrank import hrank_prune_summary
 from .snip import snip_prune_summary
 from .grasp import grasp_prune_summary
 from .wanda import wanda_prune_summary
@@ -299,6 +300,31 @@ def _build_parser() -> argparse.ArgumentParser:
     sgpt.add_argument("--percdamp", type=float, default=0.01, help="Hessian dampening (default: 0.01)")
     sgpt.add_argument("--seed", type=int, default=0, help="Random seed (default: 0)")
     sgpt.add_argument("--json", action="store_true", help="Print the comparison as JSON")
+
+    hrank = sub.add_parser(
+        "hrank",
+        help="HRank: prune conv filters whose feature maps have the lowest average rank",
+    )
+    hrank.add_argument(
+        "--specs", required=True,
+        help="Comma-separated layer specs, e.g. 'conv1=conv:4x1x3x3,fc=dense:2x4'",
+    )
+    hrank.add_argument(
+        "--weights", required=True,
+        help="Comma-separated floats (the flat weight buffer for the model)",
+    )
+    hrank.add_argument(
+        "--feature-maps", required=True,
+        help="JSON file {layer: maps[image][filter][row][col]} (e.g. activation.tolist())",
+    )
+    hrank.add_argument("--density", type=float, default=0.5, help="Fraction of filters to keep (default: 0.5)")
+    hrank.add_argument(
+        "--per-layer-density", default=None,
+        help="Comma-separated name=density overrides, e.g. 'conv1=0.75'",
+    )
+    hrank.add_argument("--rtol", type=float, default=1e-9, help="Relative rank tolerance (default: 1e-9)")
+    hrank.add_argument("--output", "-o", default=None, help="Write the Markdown report to a file instead of stdout")
+    hrank.add_argument("--json", action="store_true", help="Print the summary as JSON")
 
     slim = sub.add_parser(
         "slim",
@@ -1915,6 +1941,64 @@ def cmd_sparsegpt(args: argparse.Namespace) -> int:
     return 0
 
 
+def _render_hrank_markdown(summary: dict) -> str:
+    lines: list[str] = [
+        "# HRank (feature-map rank) filter pruning",
+        "",
+        f"- Density: {summary['density']:.4f}",
+        f"- Non-zero weights: {summary['nonzero_weights']}/{summary['total_weights']} "
+        f"({summary['overall_survival']:.4f})",
+        "",
+        "| Layer | Kind | Avg ranks | Kept filters | Survival |",
+        "| --- | --- | --- | --- | ---: |",
+    ]
+    for row in summary["layers"]:
+        ranks = "-" if row["ranks"] is None else ", ".join(f"{r:.2f}" for r in row["ranks"])
+        kept = "-" if row["kept_filters"] is None else ", ".join(str(k) for k in row["kept_filters"])
+        lines.append(
+            f"| {row['layer']} | {row['kind']} | {ranks} | {kept} | {row['survival_fraction']:.4f} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def cmd_hrank(args: argparse.Namespace) -> int:
+    try:
+        specs = _parse_specs(args.specs)
+        flat = _parse_weights(args.weights)
+        per_layer = _parse_per_layer(args.per_layer_density)
+        try:
+            maps = json.loads(Path(args.feature_maps).read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise ValueError(f"could not read {args.feature_maps}: {exc}") from None
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{args.feature_maps} is not valid JSON: {exc}") from None
+        if not isinstance(maps, dict):
+            raise ValueError("feature maps JSON must be an object keyed by layer name")
+    except ValueError as exc:
+        print(f"hrank: {exc}", file=sys.stderr)
+        return 2
+    try:
+        model = _weights_per_layer(specs, flat)
+        summary = hrank_prune_summary(
+            specs, model, maps, density=args.density, per_layer=per_layer or None, rtol=args.rtol
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        print(f"hrank: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        printable = dict(summary)
+        printable.pop("pruned_weights", None)
+        print(json.dumps(printable, indent=2))
+        return 0
+    text = _render_hrank_markdown(summary)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+        print(f"Wrote {args.output}")
+        return 0
+    print(text)
+    return 0
+
+
 def cmd_slim(args: argparse.Namespace) -> int:
     try:
         specs = _parse_specs(args.specs)
@@ -2583,6 +2667,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_snip(args)
     if args.command == "slim":
         return cmd_slim(args)
+    if args.command == "hrank":
+        return cmd_hrank(args)
     if args.command == "thinet":
         return cmd_thinet(args)
     if args.command == "sparsegpt":

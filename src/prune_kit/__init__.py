@@ -66,6 +66,14 @@ from .slimming import (
     slimming_subgradient,
     slimming_threshold,
 )
+from .hrank import (
+    hrank_keep_filters,
+    hrank_prune_layer,
+    hrank_prune_model,
+    hrank_prune_summary,
+    hrank_scores,
+    matrix_rank,
+)
 from .fpgm import (
     fpgm_distances,
     fpgm_prune_layer,
@@ -190,6 +198,12 @@ __all__ = [
     "slimming_subgradient",
     "slimming_threshold",
     "fpgm_distances",
+    "hrank_keep_filters",
+    "hrank_prune_layer",
+    "hrank_prune_model",
+    "hrank_prune_summary",
+    "hrank_scores",
+    "matrix_rank",
     "fpgm_prune_layer",
     "fpgm_prune_model",
     "geometric_median",

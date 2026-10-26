@@ -10,7 +10,7 @@ Optimal Brain Damage (OBD) second-order saliency ((1/2)*H_ii*w^2),
 Optimal Brain Surgeon (OBS) inverse-Hessian saliency (w^2/(2*H^{-1}_ii)),
 Zhu & Gupta gradual / polynomial magnitude pruning,
 N:M semi-structured sparsity (e.g. 2:4 for sparse tensor cores),
-structured channel/filter pruning,
+structured channel/filter pruning, HRank feature-map-rank filter pruning,
 RigL / SET dynamic sparse training (prune-and-regrow),
 first-order Taylor (soft-filter) channel pruning, per-layer and
 per-channel survival reporting, sparse-mask helpers, and a tiny CLI.
@@ -692,6 +692,28 @@ silent but has the largest weights, and two channels are redundant mixes of
 the others. The demo compares the relative output error of L1 selection,
 ThiNet, and ThiNet + LS.
 
+## HRank (feature-map rank filter pruning)
+
+HRank (Lin et al., CVPR 2020) scores a conv filter by the **average rank of
+the feature maps it produces** over a small batch of images,
+`R(k) = (1/G) * sum_g rank(O_k(I_g))`. These ranks are stable across
+batches, and low-rank maps carry little information, so the lowest-`R`
+filters are pruned. Feature maps are plain nested lists
+`maps[image][filter][row][col]` (what `activation.tolist()` gives for an
+`(N, C, H, W)` tensor); `matrix_rank` is a dependency-free Gaussian
+elimination with a relative tolerance.
+
+```python
+from prune_kit import conv_layer, hrank_scores, hrank_prune_model, matrix_rank
+
+matrix_rank([[1.0, 2.0], [2.0, 4.0]])                  # 1
+hrank_scores(maps_conv1)                               # average rank per filter
+pruned = hrank_prune_model(specs, model, {"conv1": maps_conv1}, density=0.5)
+```
+
+`prune-kit hrank --specs 'conv1=conv:4x1x3x3' --weights ... --feature-maps maps.json`
+reads `{layer: maps}` from JSON and prints per-filter average ranks and the kept filters.
+
 ## SparseGPT (one-shot pruning with second-order weight reconstruction)
 
 Magnitude, Wanda and OBS saliency only *choose* which weights to drop. SparseGPT (Frantar & Alistarh, ICML 2023) also *updates the surviving weights*, so the layer output on calibration data barely changes. For `y = W x`, every row solves `min ||(w − w') Xᵀ||²` subject to the sparsity pattern, and all rows share the Hessian `H = XᵀX` (dampened by `percdamp·mean(diag H)`). Columns are processed left to right. When a weight is pruned, the Optimal Brain Surgeon update `w_{j:} −= (w_j / U_jj) · U_{j, j:}` spreads its error onto the not-yet-processed columns, where `U` is the upper Cholesky factor of `H⁻¹`. Masks are chosen adaptively per block of `block_size` columns by `w² / U_jj²`, either unstructured or `n:m` (for example 2:4).
@@ -769,6 +791,7 @@ prune-kit structured --help
 prune-kit taylor --help
 prune-kit snip --help
 prune-kit slim --help
+prune-kit hrank --help
 prune-kit grasp --help
 prune-kit wanda --help
 prune-kit lamp --help
