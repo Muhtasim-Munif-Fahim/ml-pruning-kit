@@ -16,6 +16,7 @@ from .slimming import slimming_prune_summary
 from .hrank import hrank_prune_summary
 from .snip import snip_prune_summary
 from .grasp import grasp_prune_summary
+from .owl import owl_prune_summary
 from .wanda import wanda_prune_summary
 from .lamp import lamp_prune_summary
 from .nm_sparsity import nm_prune_summary
@@ -473,6 +474,34 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print the summary as JSON",
     )
 
+    owl = sub.add_parser(
+        "owl",
+        help="Wanda with OWL outlier-weighed layer-wise sparsity (Yin et al. 2024)",
+    )
+    owl.add_argument(
+        "--density", type=float, default=0.5,
+        help="Target mean fraction of connections to keep (default: 0.5)",
+    )
+    owl.add_argument(
+        "--outlier-threshold", "-m", type=float, default=5.0,
+        help="A score is an outlier above M times its layer mean (default: 5)",
+    )
+    owl.add_argument(
+        "--lam", type=float, default=0.08,
+        help="Max per-layer density deviation from the target (default: 0.08)",
+    )
+    owl.add_argument(
+        "--weighted", action="store_true",
+        help="Match the parameter-weighted mean density instead of the layer mean",
+    )
+    owl.add_argument("--specs", required=True, help="Comma-separated layer specs (see wanda)")
+    owl.add_argument("--weights", required=True, help="Comma-separated flat weight buffer")
+    owl.add_argument(
+        "--activation-norms", required=True,
+        help="Comma-separated per-weight activation norms (or column norms for one layer)",
+    )
+    owl.add_argument("--output", "-o", default=None, help="Write the Markdown report to a file")
+    owl.add_argument("--json", action="store_true", help="Print the summary as JSON")
 
     lamp = sub.add_parser(
         "lamp",
@@ -1260,6 +1289,29 @@ def _render_wanda_markdown(summary: dict) -> str:
         )
     return "\n".join(lines) + "\n"
 
+
+def _render_owl_markdown(summary: dict) -> str:
+    lines: list[str] = [
+        "# OWL outlier-weighed layer-wise sparsity (Wanda)",
+        "",
+        f"- Target density: {summary['target_density']:.4f}",
+        f"- Outlier threshold M: {summary['outlier_threshold']:g}",
+        f"- Lambda: {summary['lam']:g}",
+        f"- Weighted mean: {'yes' if summary['weighted'] else 'no'}",
+        f"- Total weights: {summary['total']}",
+        f"- Total kept: {summary['total_kept']}",
+        f"- Overall survival: {summary['overall_survival']:.4f}",
+        "",
+        "| Layer | Kind | Outlier ratio | OWL density | Total | Kept | Survival |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for row in summary["layers"]:
+        lines.append(
+            f"| {row['layer']} | {row['kind']} | {row['outlier_ratio']:.4f} | "
+            f"{row['owl_density']:.4f} | {row['total_weights']} | "
+            f"{row['kept_weights']} | {row['survival_fraction']:.4f} |"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def _render_lamp_markdown(summary: dict) -> str:
@@ -2124,6 +2176,47 @@ def cmd_wanda(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_owl(args: argparse.Namespace) -> int:
+    try:
+        specs = _parse_specs(args.specs)
+        flat = _parse_weights(args.weights)
+        norms_flat = _parse_weights(args.activation_norms)
+        model = _weights_per_layer(specs, flat)
+        if len(norms_flat) == len(flat):
+            activation_norms = _weights_per_layer(specs, norms_flat)
+        elif len(specs) == 1:
+            activation_norms = {specs[0].name: norms_flat}
+        else:
+            raise ValueError(
+                f"activation-norms has {len(norms_flat)} values; expected "
+                f"{len(flat)} (per-weight) or column norms for a single layer"
+            )
+        summary = owl_prune_summary(
+            specs,
+            model,
+            activation_norms,
+            density=args.density,
+            m=args.outlier_threshold,
+            lam=args.lam,
+            weighted=args.weighted,
+        )
+    except (KeyError, ValueError) as exc:
+        print(f"owl: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        printable = dict(summary)
+        printable.pop("pruned_weights", None)
+        printable.pop("masks", None)
+        print(json.dumps(printable, indent=2))
+        return 0
+    text = _render_owl_markdown(summary)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+        print(f"Wrote {args.output}")
+        return 0
+    print(text)
+    return 0
+
 
 def cmd_lamp(args: argparse.Namespace) -> int:
     try:
@@ -2677,6 +2770,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_grasp(args)
     if args.command == "wanda":
         return cmd_wanda(args)
+    if args.command == "owl":
+        return cmd_owl(args)
     if args.command == "lamp":
         return cmd_lamp(args)
     if args.command == "erk":

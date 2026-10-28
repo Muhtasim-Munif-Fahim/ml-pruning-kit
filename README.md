@@ -331,6 +331,35 @@ python -m prune_kit.cli wanda \
 ```
 
 
+## OWL (outlier-weighed layer-wise sparsity for Wanda)
+
+OWL comes from Yin et al., "Outlier Weighed Layerwise Sparsity", ICML 2024.
+Instead of giving every layer the same Wanda sparsity, it gives more density
+to layers with many *outlier* connections: Wanda scores `|W| * ||X||` above
+`M` times the layer mean. The outlier ratios are min-max scaled to
+`[0, 2 * lam]` and shifted so that the mean density equals the target. With
+`weighted=True`, the shift matches the parameter-weighted mean, so the
+overall kept fraction is exact. Each layer is then pruned with Wanda at its
+own density.
+
+```python
+from prune_kit import owl_prune_summary
+
+summary = owl_prune_summary(specs, model, activation_norms, density=0.3, m=5.0, lam=0.08)
+summary["outlier_ratios"], [row["owl_density"] for row in summary["layers"]]
+pruned = summary["pruned_weights"]
+```
+
+`owl_outlier_ratios` and `owl_layer_densities` expose the two steps, and
+`owl_prune_model` returns only the pruned weights. When every layer has the
+same outlier ratio, or `lam=0`, the result is identical to uniform
+`wanda_prune_model`.
+
+```bash
+prune-kit owl --specs fc1=dense:4x8,fc2=dense:4x8 --weights ... --activation-norms ... \
+  --density 0.5 -m 5 --lam 0.08 [--weighted] [--json]
+```
+
 ## N:M semi-structured sparsity (2:4)
 
 Sparse tensor cores (NVIDIA Ampere and later) accelerate layers whose

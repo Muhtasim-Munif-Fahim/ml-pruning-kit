@@ -94,6 +94,13 @@ from .survival import (
     per_channel_survival,
     per_layer_survival,
 )
+from .owl import (
+    layer_outlier_ratio,
+    owl_layer_densities,
+    owl_outlier_ratios,
+    owl_prune_model,
+    owl_prune_summary,
+)
 from .wanda import (
     activation_column_norms,
     wanda_prune_layer,
@@ -230,6 +237,11 @@ __all__ = [
     "wanda_prune_layer",
     "wanda_prune_model",
     "wanda_prune_summary",
+    "layer_outlier_ratio",
+    "owl_outlier_ratios",
+    "owl_layer_densities",
+    "owl_prune_model",
+    "owl_prune_summary",
     "frobenius_norm",
     "lamp_scores",
     "lamp_prune_layer",
