@@ -28,6 +28,12 @@ from .rigl import (
     rigl_update_model,
     set_update_layer,
 )
+from .force import (
+    dense_chain_connected,
+    density_schedule,
+    force_prune_model,
+    mlp_mse_grads,
+)
 from .snip import (
     snip_prune_layer,
     snip_prune_model,
@@ -225,6 +231,10 @@ __all__ = [
     "taylor_prune_model",
     "taylor_prune_summary",
     "snip_scores",
+    "force_prune_model",
+    "density_schedule",
+    "dense_chain_connected",
+    "mlp_mse_grads",
     "snip_prune_layer",
     "snip_prune_model",
     "snip_prune_summary",

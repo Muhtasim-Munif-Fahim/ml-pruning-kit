@@ -247,6 +247,33 @@ print(summary["total_kept"], summary["sparsity"])
 ```
 
 
+## FORCE / Iterative SNIP (progressive skeletonization)
+
+At very high sparsity a single SNIP estimate breaks down: removing most
+weights changes the gradients of the ones left, and whole layers can be
+cut off. FORCE and Iterative SNIP (de Jorge et al., ICLR 2021) instead
+decay the keep-fraction over `steps` iterations (`d_t = density**(t/T)`).
+At each iteration they re-score `|w0 * dL/dw_eff|` **on the currently
+pruned network**. FORCE lets a pruned connection come back if it scores
+highly again; Iterative SNIP makes pruning permanent.
+
+```python
+from prune_kit import dense_layer, force_prune_model, mlp_mse_grads
+
+specs = [dense_layer("fc1", 8, 32), dense_layer("fc2", 32, 32), dense_layer("fc3", 32, 2)]
+grad_fn = mlp_mse_grads(specs, inputs, targets, activation="relu")  # or your own: model -> grads / (loss, grads)
+result = force_prune_model(specs, model, grad_fn, density=0.01, steps=10, mode="force")
+result["masks"], result["history"], result["final_loss"], result["connected"]
+```
+
+- With `steps=1, mode="iter_snip"` the result is exactly one-shot SNIP.
+- `history` records each step's target density, kept count, loss and
+  how many connections were revived.
+- `dense_chain_connected(specs, masks)` reports layer collapse (no
+  input-to-output path left).
+- `prune-kit force --density 0.01` compares SNIP, Iterative SNIP and
+  FORCE on a synthetic teacher-student MLP.
+
 ## GraSP (gradient signal preservation)
 
 Lottery-ticket IMP, SNIP, and Taylor already cover magnitude rewind,
@@ -819,6 +846,7 @@ prune-kit imp --help
 prune-kit structured --help
 prune-kit taylor --help
 prune-kit snip --help
+prune-kit force --help
 prune-kit slim --help
 prune-kit hrank --help
 prune-kit grasp --help
