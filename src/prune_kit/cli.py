@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from .prune import iterative_magnitude_prune_model
 from .slimming import slimming_prune_summary
 from .hrank import hrank_prune_summary
 from .snip import snip_prune_summary
+from .force import force_prune_model, mlp_mse_grads
 from .grasp import grasp_prune_summary
 from .owl import owl_prune_summary
 from .wanda import wanda_prune_summary
@@ -272,6 +274,26 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
         help="Print the summary as JSON",
     )
+
+    force = sub.add_parser(
+        "force",
+        help="FORCE / Iterative SNIP progressive pruning vs one-shot SNIP (synthetic MLP demo)",
+    )
+    force.add_argument(
+        "--specs", default="fc1=dense:8x32,fc2=dense:32x32,fc3=dense:32x2",
+        help="Dense chain specs 'name=dense:INxOUT,...' (default: 8-32-32-2 MLP)",
+    )
+    force.add_argument("--density", type=float, default=0.05, help="Final keep fraction (default: 0.05)")
+    force.add_argument("--steps", type=int, default=10, help="Pruning iterations (default: 10)")
+    force.add_argument(
+        "--schedule", choices=("exponential", "linear"), default="exponential",
+        help="Keep-fraction decay schedule (default: exponential, as in the paper)",
+    )
+    force.add_argument("--scope", choices=("global", "layer"), default="global")
+    force.add_argument("--activation", choices=("relu", "tanh", "linear"), default="relu")
+    force.add_argument("--samples", type=int, default=64, help="Synthetic calibration samples (default: 64)")
+    force.add_argument("--seed", type=int, default=0)
+    force.add_argument("--json", action="store_true", help="Print the comparison as JSON")
 
     thinet = sub.add_parser(
         "thinet",
@@ -1913,6 +1935,76 @@ def _thinet_demo(args: argparse.Namespace):
     return [spec], {"demo": weights}, {"demo": rows}
 
 
+def _force_demo(args: argparse.Namespace):
+    import random
+
+    specs = _parse_specs(args.specs)
+    if args.samples < 1:
+        raise ValueError("--samples must be >= 1")
+    rng = random.Random(args.seed)
+    n_in, n_out = specs[0].shape[1], specs[-1].shape[0]
+    inputs = [[rng.gauss(0.0, 1.0) for _ in range(n_in)] for _ in range(args.samples)]
+    teacher = [[rng.gauss(0.0, 1.0) for _ in range(n_in)] for _ in range(n_out)]
+    targets = [[math.tanh(sum(t * v for t, v in zip(row, x))) for row in teacher] for x in inputs]
+    model = {
+        spec.name: [
+            rng.gauss(0.0, (2.0 / spec.shape[1]) ** 0.5)
+            for _ in range(spec.shape[0] * spec.shape[1])
+        ]
+        for spec in specs
+    }
+    return specs, model, mlp_mse_grads(specs, inputs, targets, args.activation)
+
+
+def cmd_force(args: argparse.Namespace) -> int:
+    try:
+        specs, model, grad_fn = _force_demo(args)
+        runs = {
+            "snip": force_prune_model(
+                specs, model, grad_fn, args.density, steps=1, mode="iter_snip", scope=args.scope
+            ),
+            "iter_snip": force_prune_model(
+                specs, model, grad_fn, args.density, steps=args.steps, mode="iter_snip",
+                schedule=args.schedule, scope=args.scope,
+            ),
+            "force": force_prune_model(
+                specs, model, grad_fn, args.density, steps=args.steps, mode="force",
+                schedule=args.schedule, scope=args.scope,
+            ),
+        }
+    except (KeyError, ValueError) as exc:
+        print(f"force: {exc}", file=sys.stderr)
+        return 2
+    dense_loss, _ = grad_fn(model)
+    if args.json:
+        printable = {
+            name: {k: v for k, v in run.items() if k not in {"pruned_weights", "masks"}}
+            for name, run in runs.items()
+        }
+        printable["dense_loss"] = dense_loss
+        print(json.dumps(printable, indent=2))
+        return 0
+    names = [spec.name for spec in specs]
+    lines = [
+        "# FORCE / Iterative SNIP vs one-shot SNIP (synthetic MLP demo)",
+        "",
+        f"- Density: {args.density:.4f} over {args.steps} {args.schedule} steps ({args.scope} scope)",
+        f"- Dense loss: {dense_loss:.6f}",
+        "",
+        "| Method | " + " | ".join(names) + " | Loss | Connected | Revived |",
+        "| --- | " + " | ".join("---:" for _ in names) + " | ---: | --- | ---: |",
+    ]
+    for method, run in runs.items():
+        kept = " | ".join(f"{row['kept_weights']}/{row['total_weights']}" for row in run["layers"])
+        revived = sum(h["revived"] for h in run["history"])
+        lines.append(
+            f"| {method} | {kept} | {run['final_loss']:.6f} | "
+            f"{'yes' if run['connected'] else 'no'} | {revived} |"
+        )
+    print("\n".join(lines))
+    return 0
+
+
 def cmd_thinet(args: argparse.Namespace) -> int:
     try:
         specs, model, inputs = _thinet_demo(args)
@@ -2758,6 +2850,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_taylor(args)
     if args.command == "snip":
         return cmd_snip(args)
+    if args.command == "force":
+        return cmd_force(args)
     if args.command == "slim":
         return cmd_slim(args)
     if args.command == "hrank":
