@@ -881,3 +881,23 @@ the density after each round plus a per-layer kept-count table.
 ```bash
 pytest tests
 ```
+## Layer-wise sensitivity analysis
+
+`prune_kit.sensitivity` runs the per-layer sensitivity scan from Han et al.
+(2015), as popularised by Distiller. It prunes **one layer at a time** to a
+sweep of densities, scores the whole model with your own `evaluate` callable,
+and then allocates per-layer densities under a quality budget:
+
+```python
+from prune_kit import sensitivity_analysis, sensitivity_densities, sensitivity_prune_model
+
+analysis = sensitivity_analysis(weights, evaluate=lambda m: accuracy(m))
+print(analysis.ranking())                 # most -> least sensitive (AUC of degradation)
+dens = sensitivity_densities(analysis, tolerance=0.01, relative=True)  # <=1% drop per layer
+res = sensitivity_prune_model(weights, evaluate=lambda m: accuracy(m), tolerance=0.01, relative=True)
+print(res.densities, res.overall_density, res.final_score, res.notes)
+```
+
+Pass `higher_is_better=False` when `evaluate` returns a loss. Pass `prune_fn(weights, density)`
+to sweep a different pruning criterion. Because per-layer tolerances do not add up exactly,
+the combined model is scored again, and a note is added if it goes over budget.

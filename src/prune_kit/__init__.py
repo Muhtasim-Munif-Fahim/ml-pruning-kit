@@ -34,6 +34,16 @@ from .force import (
     force_prune_model,
     mlp_mse_grads,
 )
+from .sensitivity import (
+    SensitivityAnalysis,
+    SensitivityCurve,
+    SensitivityPruneResult,
+    default_density_grid,
+    layer_sensitivity,
+    sensitivity_analysis,
+    sensitivity_densities,
+    sensitivity_prune_model,
+)
 from .snip import (
     snip_prune_layer,
     snip_prune_model,
@@ -315,4 +325,12 @@ __all__ = [
     "thinet_prune_model",
     "thinet_prune_summary",
     "thinet_select_channels",
+    "SensitivityAnalysis",
+    "SensitivityCurve",
+    "SensitivityPruneResult",
+    "default_density_grid",
+    "layer_sensitivity",
+    "sensitivity_analysis",
+    "sensitivity_densities",
+    "sensitivity_prune_model",
 ]
