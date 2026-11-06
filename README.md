@@ -901,3 +901,21 @@ print(res.densities, res.overall_density, res.final_score, res.notes)
 Pass `higher_is_better=False` when `evaluate` returns a loss. Pass `prune_fn(weights, density)`
 to sweep a different pruning criterion. Because per-layer tolerances do not add up exactly,
 the combined model is scored again, and a note is added if it goes over budget.
+
+## FLOPs / MAC compression report
+
+After pruning, compare theoretical multiply-accumulate cost — not just parameter
+density — for dense and conv layers (unstructured density or structured channel
+counts):
+
+```python
+from prune_kit import dense_layer, conv_layer, flops_report
+
+report = flops_report(
+    [dense_layer("fc1", 128, 64), conv_layer("c1", 32, 16, 3, 3)],
+    densities={"fc1": 0.2, "c1": 0.5},
+    spatial_hw={"c1": (28, 28)},
+)
+report.mac_compression, report.param_compression, report.to_dict()
+```
+

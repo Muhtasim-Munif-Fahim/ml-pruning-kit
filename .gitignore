@@ -4,4 +4,4 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-examples/output/
+examples/output/.venv/

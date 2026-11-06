@@ -28,6 +28,13 @@ from .rigl import (
     rigl_update_model,
     set_update_layer,
 )
+from .flops import (
+    FlopsReport,
+    LayerFlops,
+    dense_macs,
+    estimate_layer_macs,
+    flops_report,
+)
 from .force import (
     dense_chain_connected,
     density_schedule,
