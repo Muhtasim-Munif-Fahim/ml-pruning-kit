@@ -97,6 +97,14 @@ from .hrank import (
     hrank_scores,
     matrix_rank,
 )
+from .soft_filter import (
+    SoftFilterEpoch,
+    SoftFilterPruningResult,
+    asfp_rate_schedule,
+    constant_rate_schedule,
+    soft_filter_prune_layer,
+    soft_filter_pruning,
+)
 from .fpgm import (
     fpgm_distances,
     fpgm_prune_layer,
@@ -227,6 +235,12 @@ __all__ = [
     "slimming_prune_summary",
     "slimming_subgradient",
     "slimming_threshold",
+    "SoftFilterEpoch",
+    "SoftFilterPruningResult",
+    "asfp_rate_schedule",
+    "constant_rate_schedule",
+    "soft_filter_prune_layer",
+    "soft_filter_pruning",
     "fpgm_distances",
     "hrank_keep_filters",
     "hrank_prune_layer",

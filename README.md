@@ -770,6 +770,19 @@ pruned = hrank_prune_model(specs, model, {"conv1": maps_conv1}, density=0.5)
 `prune-kit hrank --specs 'conv1=conv:4x1x3x3' --weights ... --feature-maps maps.json`
 reads `{layer: maps}` from JSON and prints per-filter average ranks and the kept filters.
 
+## SFP / ASFP (soft filter pruning with regrowth during training)
+
+Hard filter pruning removes a filter for good, even when its low norm came from noise early in training. Soft Filter Pruning (He et al., IJCAI 2018) takes a different approach. At the end of **every epoch** it zeros the lowest-L2 filters of each conv layer but keeps training them, so a filter the loss still needs can regrow and win its place back. After the last epoch the zeroed set is final. Asymptotic SFP (He et al., TNNLS 2019) ramps the rate up exponentially instead of applying the target rate from epoch 1: `P_0 = 0`, `P_{E/4} = 0.75 P`, `P_E = P`. This moves information from to-be-pruned filters to the survivors gradually. Training is a `train_epoch(model, epoch) -> model` callback, so any framework can be plugged in. `history` records which filters were zeroed and which revived at each epoch.
+
+```python
+from prune_kit import conv_layer, soft_filter_pruning, asfp_rate_schedule
+
+specs = [conv_layer("conv1", out_channels=16, in_channels=3, kernel_h=3, kernel_w=3)]
+res = soft_filter_pruning(specs, weights, train_one_epoch, epochs=40, rate=0.3, schedule="asymptotic")
+res.kept_filters["conv1"], res.total_revived, res.filter_density()
+asfp_rate_schedule(0.3, 40)[:5]
+```
+
 ## SparseGPT (one-shot pruning with second-order weight reconstruction)
 
 Magnitude, Wanda and OBS saliency only *choose* which weights to drop. SparseGPT (Frantar & Alistarh, ICML 2023) also *updates the surviving weights*, so the layer output on calibration data barely changes. For `y = W x`, every row solves `min ||(w − w') Xᵀ||²` subject to the sparsity pattern, and all rows share the Hessian `H = XᵀX` (dampened by `percdamp·mean(diag H)`). Columns are processed left to right. When a weight is pruned, the Optimal Brain Surgeon update `w_{j:} −= (w_j / U_jj) · U_{j, j:}` spreads its error onto the not-yet-processed columns, where `U` is the upper Cholesky factor of `H⁻¹`. Masks are chosen adaptively per block of `block_size` columns by `w² / U_jj²`, either unstructured or `n:m` (for example 2:4).
