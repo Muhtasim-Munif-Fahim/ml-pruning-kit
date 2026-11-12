@@ -35,6 +35,13 @@ from .flops import (
     estimate_layer_macs,
     flops_report,
 )
+from .effective import (
+    EffectiveSparsityReport,
+    LayerEffectiveSparsity,
+    effective_masks,
+    effective_sparsity_report,
+    prune_disconnected,
+)
 from .force import (
     dense_chain_connected,
     density_schedule,
@@ -206,6 +213,11 @@ from .gradual import (
 )
 
 __all__ = [
+    "EffectiveSparsityReport",
+    "LayerEffectiveSparsity",
+    "effective_masks",
+    "effective_sparsity_report",
+    "prune_disconnected",
     "LayerSpec",
     "dense_layer",
     "conv_layer",

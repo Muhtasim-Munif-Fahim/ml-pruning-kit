@@ -932,3 +932,21 @@ report = flops_report(
 report.mac_compression, report.param_compression, report.to_dict()
 ```
 
+
+## Effective sparsity (disconnected weights)
+
+At high sparsity many surviving weights sit on no input-to-output path: they
+read from a neuron that receives no input or feed one that reaches no output.
+They can be removed without changing a bias-free network's function, so the
+*effective* sparsity (Vysogorets & Kempe, JMLR 2023) is often far higher than
+the nominal one; compare pruning methods at equal effective sparsity.
+
+```python
+from prune_kit import dense_layer, effective_sparsity_report, prune_disconnected
+
+specs = [dense_layer("fc1", 784, 300), dense_layer("fc2", 300, 100), dense_layer("fc3", 100, 10)]
+rep = effective_sparsity_report(specs, masks)
+rep.direct_sparsity, rep.effective_sparsity, rep.connected
+print(rep.table())                        # per-layer active vs effective, dead neurons
+clean = prune_disconnected(specs, model)  # zero the disconnected weights
+```
